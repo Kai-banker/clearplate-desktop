@@ -16,3 +16,8 @@ capture-recovery.bin
 *.pem
 *.pfx
 *.env
+capture-recovery.plist
+instance.lock
+**/*.dSYM/
+**/__pycache__/
+*.p12
