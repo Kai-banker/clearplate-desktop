@@ -36,7 +36,13 @@ dotnet publish src/ClearPlate.Windows/ClearPlate.Windows.csproj -c Release -r wi
 artifacts\win-x64\ClearPlate.exe --smoke-test
 ```
 
-测试使用模拟 HTTP，不连接真实账号、不上传或打卡。Windows smoke 检查会创建窗口并验证内置照片和 DPAPI 加密读写，使用临时假会话。`docs/windows-ci.yml.example` 提供 Windows 自动构建、窗口启动和 DPAPI 检查的工作流示例。当前发布凭据没有 GitHub `workflow` 权限，因此示例尚未启用；有相应权限的维护者可将其放到 `.github/workflows/windows.yml`。
+测试使用模拟 HTTP，不连接真实账号、不上传或打卡。1.0.0 已使用 .NET 10 SDK 在 macOS 交叉编译为 Windows x64，自包含发布成功，46 项核心检查通过。尚未在 Windows 机器运行界面和真实打卡；可在 Windows 执行上述 `--smoke-test` 检查窗口与 DPAPI。Windows smoke 检查会创建窗口并验证内置照片和 DPAPI 加密读写，使用临时假会话。`docs/windows-ci.yml.example` 提供 Windows 自动构建、窗口启动和 DPAPI 检查的工作流示例。当前发布凭据没有 GitHub `workflow` 权限，因此示例尚未启用；有相应权限的维护者可将其放到 `.github/workflows/windows.yml`。
+
+依赖下载若遇到 NuGet 网络问题，可为 `dotnet publish` 增加微软公开包源参数：
+
+```powershell
+--source https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-public/nuget/v3/index.json
+```
 
 ## 结构
 
