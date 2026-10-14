@@ -7,12 +7,29 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 3 && args[0] == "--capture-watchdog")
+        {
+            try
+            {
+                if (int.TryParse(args[1], out var parentId))
+                {
+                    try { using var parent = System.Diagnostics.Process.GetProcessById(parentId); _ = parent.WaitForExit(210000); }
+                    catch (ArgumentException) { }
+                }
+                _ = CaptureNetworkSettings.Restore(args[2]); return 0;
+            }
+            catch { return 1; }
+        }
         ApplicationConfiguration.Initialize();
+        if (args.Contains("--smoke-test"))
+        {
+            try { return SmokeTest(); } catch (Exception error) { Console.Error.WriteLine(error); return 1; }
+        }
         using var mutex = new Mutex(true, "Local\\ClearPlateDesktop-x64", out var firstInstance);
         if (!firstInstance) { MessageBox.Show("光盘打卡工具已在运行，请查看窗口或任务栏托盘。", "光盘打卡"); return 0; }
         try
         {
-            if (args.Contains("--smoke-test")) return SmokeTest();
+            _ = CaptureNetworkSettings.Restore();
             using var client = CreateClient();
             var store = new WindowsStore();
             using var form = new MainForm(store, client);
@@ -38,6 +55,7 @@ internal static class Program
             if (File.ReadAllText(Path.Combine(folder, "state.json")).Contains("fake-smoke-token", StringComparison.Ordinal)) throw new Exception("Plaintext token was saved");
             var loaded = store.Load();
             if (loaded.Session?.Token != "fake-smoke-token" || loaded.State.ScheduleEnabled) throw new Exception("DPAPI roundtrip failed");
+            CaptureNetworkSettings.CheckReadOnly();
             using var client = CreateClient();
             using var form = new MainForm(store, client, startTimer: false);
             form.CreateControl();
@@ -45,7 +63,7 @@ internal static class Program
             form.Show();
             Application.DoEvents();
             form.Close();
-            Console.WriteLine("Windows smoke check passed: DPAPI, form layout, embedded image. No network requests.");
+            Console.WriteLine("Windows smoke check passed: DPAPI, form layout, embedded image, read-only proxy interop. No network requests or trust changes.");
             return 0;
         }
         finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }

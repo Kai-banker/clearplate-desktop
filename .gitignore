@@ -10,6 +10,7 @@ state.json
 session.json
 settings.json
 requests.jsonl
+capture-recovery.bin
 *.tmp
 *.har
 *.pem

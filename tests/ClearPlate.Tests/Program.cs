@@ -116,7 +116,8 @@ handler = new(() => now); engine = Engine(handler, new() { Location = "NaN,0" })
 await engine.SubmitAsync("18:00", Photo);
 Check(handler.Calls == 0 && engine.State.Attempted.Count == 0, "invalid location never consumes slot or sends request");
 
-Console.WriteLine($"PASS: {checks} checks; mocked HTTP only, no live requests.");
+var captureChecks = await CaptureChecks.RunAsync();
+Console.WriteLine($"PASS: {checks} business checks + {captureChecks} capture protocol / isolated local TLS checks; no live requests, no system trust or proxy changes.");
 
 sealed class FakeHandler(Func<DateTimeOffset> now) : HttpMessageHandler
 {
