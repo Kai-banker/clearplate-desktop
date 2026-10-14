@@ -1,0 +1,42 @@
+name: Windows x64 build
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Offline API and scheduling checks
+        run: dotnet run --project tests/ClearPlate.Tests/ClearPlate.Tests.csproj -c Release
+      - name: Publish Windows x64
+        run: dotnet publish src/ClearPlate.Windows/ClearPlate.Windows.csproj -c Release -r win-x64 --self-contained true -o artifacts/win-x64
+      - name: Windows UI and DPAPI smoke check
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "$PWD/artifacts/win-x64/ClearPlate.exe" -ArgumentList '--smoke-test' -PassThru
+          if (-not $process.WaitForExit(90000)) { $process.Kill(); throw 'Smoke check timed out' }
+          if ($process.ExitCode -ne 0) { throw "Smoke check failed: $($process.ExitCode)" }
+      - name: Package portable app
+        shell: pwsh
+        run: |
+          Copy-Item README.md artifacts/win-x64/README.md
+          Copy-Item LICENSE artifacts/win-x64/LICENSE.txt
+          Compress-Archive -Path artifacts/win-x64/* -DestinationPath artifacts/ClearPlate-Windows-x64-v1.0.0.zip
+          $hash = (Get-FileHash artifacts/ClearPlate-Windows-x64-v1.0.0.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  ClearPlate-Windows-x64-v1.0.0.zip" | Set-Content artifacts/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ClearPlate-Windows-x64
+          path: |
+            artifacts/ClearPlate-Windows-x64-v1.0.0.zip
+            artifacts/SHA256SUMS.txt
+          retention-days: 14

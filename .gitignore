@@ -1,0 +1,17 @@
+**/bin/
+**/obj/
+artifacts/
+*.user
+*.suo
+*.pdb
+.vs/
+.DS_Store
+state.json
+session.json
+settings.json
+requests.jsonl
+*.tmp
+*.har
+*.pem
+*.pfx
+*.env
