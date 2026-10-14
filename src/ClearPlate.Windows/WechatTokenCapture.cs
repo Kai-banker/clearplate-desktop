@@ -8,7 +8,11 @@ using System.Security.Authentication;
 using System.Text;
 using System.Web;
 
+#if MAC_CAPTURE
+namespace ClearPlate.MacCapture;
+#else
 namespace ClearPlate.Windows;
+#endif
 
 internal sealed class WechatTokenCapture : IDisposable
 {
@@ -18,11 +22,22 @@ internal sealed class WechatTokenCapture : IDisposable
     private readonly SemaphoreSlim limit = new(32);
     private readonly CaptureCertificates certificates = new();
     private readonly HttpClient upstream = new(new HttpClientHandler { UseProxy = false, UseCookies = false, AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(30) };
+#if !MAC_CAPTURE
     private CaptureRecovery? recovery;
+#endif
     private int captured;
     private bool disposed;
     internal event Action<string>? TokenFound;
     internal event Action<string>? Diagnostic;
+#if MAC_CAPTURE
+    internal byte[] PublicRoot => certificates.Root.RawData;
+    internal int Start()
+    {
+        listener.Start();
+        _ = ListenAsync();
+        return ((IPEndPoint)listener.LocalEndpoint).Port;
+    }
+#else
     internal void Start()
     {
         try
@@ -38,6 +53,7 @@ internal sealed class WechatTokenCapture : IDisposable
         }
         catch { Dispose(); throw; }
     }
+#endif
     private async Task ListenAsync()
     {
         try
@@ -142,7 +158,7 @@ internal sealed class WechatTokenCapture : IDisposable
         catch (Exception error) when (error is IOException or SocketException or AuthenticationException or HttpRequestException or OperationCanceledException or ObjectDisposedException)
         {
             if (isApi && !cancellation.IsCancellationRequested)
-                Diagnostic?.Invoke("光盘连接未能完成。请确认 Windows 微信使用系统代理并接受临时证书；若仍失败，停止采集后把此提示发来。");
+                Diagnostic?.Invoke("光盘连接未能完成。请确认微信使用系统代理并接受临时证书；若仍失败，请停止采集。");
         }
         finally { clients.TryRemove(client, out _); client.Dispose(); limit.Release(); }
     }
@@ -158,7 +174,11 @@ internal sealed class WechatTokenCapture : IDisposable
         if (disposed) return;
         disposed = true; cancellation.Cancel(); listener.Stop();
         foreach (var client in clients.Keys) client.Dispose();
+#if !MAC_CAPTURE
         try { if (recovery is not null) _ = CaptureNetworkSettings.Restore(recovery.Id); }
         finally { upstream.Dispose(); certificates.Dispose(); }
+#else
+        upstream.Dispose(); certificates.Dispose();
+#endif
     }
 }

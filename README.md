@@ -1,8 +1,14 @@
-# 光盘打卡 · Windows x64
+# 光盘打卡 · Windows / macOS
 
-一个使用本人已授权会话的 Windows 桌面工具。以 C# / .NET 10 / Windows Forms 实现，MIT 开源。
+使用本人已授权会话的桌面工具，MIT 开源。Windows 采用 C# / .NET 10 / Windows Forms；Mac 采用 SwiftUI，采集协议与 TLS 组件复用 C# 实现。
 
-## 下载与使用
+## Mac 版
+
+[v1.2.0 Mac 下载](https://github.com/KiyaKike/clearplate-desktop/releases/tag/v1.2.0)：`ClearPlate-macOS-universal-v1.2.0.zip`，支持 Apple Silicon / Intel，macOS 15+。解压运行 `光盘打卡.app`，点击“从微信自动获取 token”，在应用内同意临时代理和证书，再正常打开小程序首页或“我的”。候选先核验再保存，无需手工查找复制。首次安装默认关闭计划。
+
+Mac 版同步了临时采集、超时/退出恢复、同账号核验、防重复提交、查询阶段网络重试及上传前 2 小时间隔/剩余次数检查。会话采用 AES-GCM 加密，密钥保存在用户钥匙串；不包含任何人的凭据、位置或本机路径。旧版升级请一起迁移会话和打卡记录。**试验功能，真实 Mac 微信完整采集及 Intel 运行仍待验证**。包使用 ad-hoc 签名，未进行 Apple 公证；完整安装、恢复限制、迁移和构建步骤见 [Mac 使用说明](docs/macOS.md)。
+
+## Windows 下载与使用
 
 从 [Releases](https://github.com/KiyaKike/clearplate-desktop/releases) 下载 `ClearPlate-Windows-x64-v1.1.0.zip`，解压后运行 `ClearPlate.exe`。发布包包含运行时，无需另装 .NET。目标为 Windows x64；建议 Windows 11。
 
@@ -62,6 +68,10 @@ artifacts\win-x64\ClearPlate.exe --smoke-test
 | --- | --- |
 | `src/ClearPlate.Core` | 调度、接口、会话验证、重复保护和结果核验 |
 | `src/ClearPlate.Windows` | Windows Forms 界面、托盘、DPAPI、本地保存和内置照片 |
+| `src/ClearPlate.Mac` | SwiftUI、钥匙串会话加密、系统代理和证书恢复 |
+| `src/ClearPlate.MacCapture` | 与 Windows 复用采集协议和 TLS，私有管道传递候选 |
+| `tests/mac` | Mac 模拟账号、恢复合并、加密和隔离 TLS 检查 |
+| `scripts/build-mac.sh` | Mac 通用包构建 |
 | `tests/ClearPlate.Tests` | 无外部测试框架依赖的模拟请求检查 |
 | `docs/windows-ci.yml.example` | 需要 workflow 权限才能启用的 Windows 构建示例 |
 
