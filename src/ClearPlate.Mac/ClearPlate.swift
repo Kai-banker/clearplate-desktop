@@ -475,7 +475,7 @@ enum PreflightRetry {
     func startCapture() {
         guard !busy, !capturing else { return }
         let alert = NSAlert(); alert.messageText = "从微信自动获取 token（试验功能）"
-        alert.informativeText = "将临时启用当前网络的本地代理并信任约 6 分钟有效、仅用于光盘 API 的证书。系统可能要求授权网络设置及钥匙串操作。只处理光盘接口，不保存请求日志；其他 HTTPS 原样加密转发。采集最多 3 分钟，停止或退出时恢复；异常退出由恢复进程及下次启动处理，恢复失败会提示。请正常登录微信并打开首页或“我的”，无需额外打卡。微信不接受代理或证书时可能采集失败。"
+        alert.informativeText = "将临时启用当前网络的本地代理并为约 6 分钟有效的证书设置 SSL 信任。证书自身包含光盘 API 的关键 DNS 域名限制，仅签发该 API 的服务证书。系统可能要求授权网络设置及钥匙串操作。只处理光盘接口，不保存请求日志；其他 HTTPS 原样加密转发。采集最多 3 分钟，停止或退出时恢复；异常退出由恢复进程及下次启动处理，恢复失败会提示。请正常登录微信并打开首页或“我的”，无需额外打卡。微信不接受代理或证书时可能采集失败。"
         alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "同意并开始")
         guard alert.runModal() == .alertSecondButtonReturn else { return }
         capturing = true; status = "正在准备临时采集…"
@@ -617,7 +617,7 @@ struct PlateView: View {
                     Text("每天 08:00 / 12:00 / 18:00 · 北京时间").foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("v1.2.2 试验版").font(.caption).padding(6).background(Color.orange.opacity(0.12)).cornerRadius(6)
+                Text("v1.2.3 试验版").font(.caption).padding(6).background(Color.orange.opacity(0.12)).cornerRadius(6)
             }
             Divider()
             Text(model.account).font(.headline)

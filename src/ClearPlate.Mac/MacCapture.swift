@@ -70,10 +70,10 @@ enum MacCaptureRecovery {
         deinit { flock(descriptor, LOCK_UN); close(descriptor) }
     }
     static func trustSettings() -> CFArray {
-        let host = "clearplate-api.guangpanxingdong.com"
-        let policy = SecPolicyCreateSSL(true, host as CFString)
+        // Chromium skips macOS trust records containing PolicyString. The root itself
+        // retains its critical API DNS name constraint and only the API leaf is issued.
+        let policy = SecPolicyCreateSSL(true, nil)
         let trust: [[String: Any]] = [[kSecTrustSettingsPolicy as String: policy,
-            kSecTrustSettingsPolicyString as String: host,
             kSecTrustSettingsResult as String: NSNumber(value: SecTrustSettingsResult.trustRoot.rawValue)]]
         return trust as CFArray
     }
@@ -129,6 +129,25 @@ enum MacCaptureRecovery {
         try commit(prefs, path: path, proxies: changed)
         return id
     }
+    static func certificateLookup(_ cert: SecCertificate) -> [String: Any] {
+        [kSecClass as String: kSecClassCertificate,
+         kSecMatchSubjectWholeString as String: (SecCertificateCopySubjectSummary(cert) as String?) ?? "",
+         kSecReturnRef as String: true, kSecMatchLimit as String: kSecMatchLimitAll]
+    }
+    static func removeStoredCertificate(_ cert: SecCertificate,
+        lookup: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching,
+        delete: (CFDictionary) -> OSStatus = SecItemDelete) -> OSStatus {
+        guard (SecCertificateCopySubjectSummary(cert) as String?)?.hasPrefix("ClearPlate temporary login capture ") == true else { return errSecParam }
+        var found: CFTypeRef?
+        let status = lookup(certificateLookup(cert) as CFDictionary, &found)
+        if status == errSecItemNotFound { return errSecSuccess }
+        guard status == errSecSuccess else { return status }
+        let bytes = SecCertificateCopyData(cert) as Data
+        let exact = (found as? [SecCertificate] ?? []).filter { (SecCertificateCopyData($0) as Data) == bytes }
+        if exact.isEmpty { return errSecSuccess }
+        // MatchItemList must contain actual references returned by CopyMatching.
+        return delete([kSecClass as String: kSecClassCertificate, kSecMatchItemList as String: exact] as CFDictionary)
+    }
     static func restore(expected: String? = nil) throws {
         guard FileManager.default.fileExists(atPath: file.path) else { return }
         let mutex = try RecoveryLock()
@@ -146,17 +165,20 @@ enum MacCaptureRecovery {
         do {
             let authorized = try preferences(); let prefs = authorized.value
         defer { withExtendedLifetime(authorized) {} }
-            guard SCPreferencesLock(prefs, true) else { throw PlateError.message("不能锁定恢复网络设置。") }
-            defer { SCPreferencesUnlock(prefs) }
-            SCPreferencesSynchronize(prefs)
-            if let current = SCPreferencesPathGetValue(prefs, path as CFString) as? [String: Any] {
-                let restored = merged(current: current, original: original, installed: installed)
-                if !NSDictionary(dictionary: current).isEqual(to: restored) { try commit(prefs, path: path, proxies: restored) }
+            if let current = SCPreferencesPathGetValue(prefs, path as CFString) as? [String: Any],
+               !NSDictionary(dictionary: current).isEqual(to: merged(current: current, original: original, installed: installed)) {
+                guard SCPreferencesLock(prefs, true) else { throw PlateError.message("不能锁定恢复网络设置。") }
+                defer { SCPreferencesUnlock(prefs) }
+                SCPreferencesSynchronize(prefs)
+                if let latest = SCPreferencesPathGetValue(prefs, path as CFString) as? [String: Any] {
+                    let restored = merged(current: latest, original: original, installed: installed)
+                    if !NSDictionary(dictionary: latest).isEqual(to: restored) { try commit(prefs, path: path, proxies: restored) }
+                }
             }
         } catch { failed = true }
         let removedTrust = SecTrustSettingsRemoveTrustSettings(cert, .user)
         if removedTrust != errSecSuccess && removedTrust != errSecItemNotFound && removedTrust != errSecNoTrustSettings { failed = true }
-        let removedCert = SecItemDelete([kSecClass: kSecClassCertificate, kSecValueRef: cert] as CFDictionary)
+        let removedCert = removeStoredCertificate(cert)
         if removedCert != errSecSuccess && removedCert != errSecItemNotFound { failed = true }
         guard !failed else { throw PlateError.message("临时代理或证书尚未完全恢复，请允许系统授权并重新启动本工具；恢复记录已保留。") }
         try FileManager.default.removeItem(at: file)
@@ -236,9 +258,26 @@ enum MacCaptureRecovery {
                 } catch { onStatus?(error.localizedDescription); _ = stop() }
             } else if type == "token", ready, let token = message["token"] as? String {
                 onToken?(token)
-            } else if type == "diagnostic" {
-                onStatus?("光盘连接未完成，微信可能不接受系统代理或临时证书；可停止采集恢复设置。")
+            } else if type == "diagnostic", let code = message["code"] as? String {
+                onStatus?(Self.diagnosticMessage(code))
             }
+        }
+    }
+    static func diagnosticMessage(_ code: String) -> String {
+        switch code {
+        case "CLIENT_TLS": return "微信与本地代理的 TLS 握手未完成（CLIENT_TLS）。请停止连接后重试；不代表 token 已失效。"
+        case "CLIENT_REQUEST": return "微信已连接，但请求没有完整传输（CLIENT_REQUEST）。"
+        case "CLIENT_RESPONSE": return "平台已响应，微信端接收时断开了连接（CLIENT_RESPONSE）。"
+        case "UPSTREAM_TLS": return "本地代理连接平台时 HTTPS 校验失败（UPSTREAM_TLS）；微信端握手已通过。"
+        case "UPSTREAM_DNS": return "本地代理无法解析平台域名（UPSTREAM_DNS）。请检查网络。"
+        case "UPSTREAM_TIMEOUT": return "本地代理等待平台响应超时（UPSTREAM_TIMEOUT）。"
+        case "UPSTREAM_NETWORK": return "本地代理连接平台失败（UPSTREAM_NETWORK），不能据此判断微信拒绝证书。"
+        case "NO_CANDIDATE": return "光盘接口已连通，尚未获得可用登录状态。请在微信正常登录并打开首页或“我的”。"
+        default:
+            if code.hasPrefix("HTTP_"), let status = Int(code.dropFirst(5)), (100...599).contains(status) {
+                return "平台返回 HTTP \(status)（\(code)），微信端握手已通过，尚未同步登录状态。"
+            }
+            return "连接诊断暂不可用，请停止连接后重试。"
         }
     }
     @discardableResult func stop() -> Bool {

@@ -48,7 +48,9 @@ final class MockHTTP: URLProtocol {
         let trust = MacCaptureRecovery.trustSettings() as NSArray
         check(trust.count == 1, "single scoped trust constraint")
         let constraint = trust[0] as! NSDictionary
-        check(constraint[kSecTrustSettingsPolicyString] as? String == "clearplate-api.guangpanxingdong.com", "OS SSL hostname constraint explicit")
+        check(constraint[kSecTrustSettingsPolicyString] == nil, "Chromium-compatible SSL trust omits unsupported policy string")
+        let policy = constraint[kSecTrustSettingsPolicy] as! SecPolicy
+        check((SecPolicyCopyProperties(policy)! as NSDictionary)[kSecPolicyOid] as? String == (kSecPolicyAppleSSL as String), "trust remains SSL-only")
         check(constraint[kSecTrustSettingsAllowedError] == nil, "no ignored certificate errors")
         do {
             let mutex = try MacCaptureRecovery.RecoveryLock()
@@ -64,6 +66,28 @@ final class MockHTTP: URLProtocol {
             defer { withExtendedLifetime(mutex) {} }
             count += 1
         }
+        let fixture = URL(fileURLWithPath: CommandLine.arguments[1])
+        let own = SecCertificateCreateWithData(nil, try Data(contentsOf: fixture.appendingPathComponent("fixture-capture-root.cer")) as CFData)!
+        let other = SecCertificateCreateWithData(nil, try Data(contentsOf: fixture.appendingPathComponent("fixture-other-root.cer")) as CFData)!
+        var deleted = 0
+        let removal = MacCaptureRecovery.removeStoredCertificate(own, lookup: { query, result in
+            let fields = query as NSDictionary
+            check(fields[kSecReturnRef] as? Bool == true && fields[kSecValueRef] == nil, "cleanup requests actual stored references")
+            result?.pointee = [own, other] as CFArray
+            return errSecSuccess
+        }, delete: { query in
+            let fields = query as NSDictionary
+            let matches = fields[kSecMatchItemList] as? [SecCertificate] ?? []
+            check(matches.count == 1 && (SecCertificateCopyData(matches[0]) as Data) == (SecCertificateCopyData(own) as Data), "cleanup deletes only exact DER match")
+            check(fields[kSecValueRef] == nil && fields[kSecReturnRef] == nil, "cleanup uses valid SecItemDelete query")
+            deleted += matches.count; return errSecSuccess
+        })
+        check(removal == errSecSuccess && deleted == 1, "cleanup removes one owned certificate")
+        let absent = MacCaptureRecovery.removeStoredCertificate(own, lookup: { _, _ in errSecItemNotFound }, delete: { _ in fatalError("absent certificate deleted") })
+        check(absent == errSecSuccess, "cleanup is idempotent when already removed")
+        check(MacTokenCapture.diagnosticMessage("UPSTREAM_DNS").contains("UPSTREAM_DNS"), "DNS failure is distinguished from client TLS")
+        check(MacTokenCapture.diagnosticMessage("HTTP_412").contains("HTTP 412"), "HTTP rejection retains numeric status")
+        check(!MacTokenCapture.diagnosticMessage("fake-secret-http-token").contains("fake-secret"), "unknown diagnostic cannot echo credentials")
         let original = ["HTTPEnable": 0, "HTTPProxy": "previous.example", "HTTPPort": 8080, "HTTPSEnable": 0, "Unrelated": 7, "ProxyAutoConfigEnable": 1] as [String: Any]
         let installed = MacCaptureRecovery.installed(port: 23456)
         var temporary = original; installed.forEach { temporary[$0.key] = $0.value }

@@ -87,7 +87,7 @@ internal sealed class WechatTokenCapture : IDisposable
     }
     private async Task HandleAsync(TcpClient client)
     {
-        var isApi = false;
+        var isApi = false; var stage = "connect";
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token); deadline.CancelAfter(TimeSpan.FromSeconds(60));
         try
         {
@@ -116,8 +116,10 @@ internal sealed class WechatTokenCapture : IDisposable
             await stream.WriteAsync("HTTP/1.1 200 Connection Established\r\n\r\n"u8.ToArray(), deadline.Token);
             using var tls = new SslStream(stream, leaveInnerStreamOpen: true);
             var context = SslStreamCertificateContext.Create(certificates.Server, new System.Security.Cryptography.X509Certificates.X509Certificate2Collection { certificates.Root }, offline: true);
+            stage = "client-tls";
             await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions { ServerCertificateContext = context,
                 ApplicationProtocols = [SslApplicationProtocol.Http11], EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13 }, deadline.Token);
+            stage = "request";
             var requestHead = await CaptureProtocol.ReadHeadAsync(tls, deadline.Token); if (requestHead is null) return;
             var line = requestHead.FirstLine.Split(' ');
             if (line.Length != 3 || line[0] is not ("GET" or "POST" or "OPTIONS") || !line[1].StartsWith('/')) throw new IOException("光盘请求格式不受支持。");
@@ -135,6 +137,7 @@ internal sealed class WechatTokenCapture : IDisposable
                     || header.Key.Equals("Expect", StringComparison.OrdinalIgnoreCase) || header.Key.StartsWith("Proxy-", StringComparison.OrdinalIgnoreCase)) continue;
                 if (!request.Headers.TryAddWithoutValidation(header.Key, header.Value)) request.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
+            stage = "upstream";
             using var response = await upstream.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
             await using var responseStream = await response.Content.ReadAsStreamAsync(deadline.Token);
             using var bytes = new MemoryStream(); var buffer = new byte[8192]; int read;
@@ -148,17 +151,19 @@ internal sealed class WechatTokenCapture : IDisposable
             foreach (var header in response.Headers.Concat(response.Content.Headers))
                 if (header.Key is not ("Content-Length" or "Transfer-Encoding" or "Connection")) headers.Append(header.Key).Append(": ").Append(string.Join(", ", header.Value)).Append("\r\n");
             headers.Append("\r\n");
+            stage = "response";
             await tls.WriteAsync(Encoding.Latin1.GetBytes(headers.ToString()), deadline.Token);
             await tls.WriteAsync(responseBytes, deadline.Token); await tls.FlushAsync(deadline.Token);
             var route = HttpUtility.ParseQueryString(url.Query)["r"] ?? "";
             var candidate = CaptureProtocol.Candidate(CaptureProtocol.ApiHost, (int)response.StatusCode, route, requestHead.Headers,
                 responseBytes, response.Content.Headers.ContentEncoding.FirstOrDefault());
             if (candidate is not null && Interlocked.CompareExchange(ref captured, 1, 0) == 0) TokenFound?.Invoke(candidate);
+            else if (candidate is null) Diagnostic?.Invoke((int)response.StatusCode == 200 ? "NO_CANDIDATE" : "HTTP_" + (int)response.StatusCode);
         }
         catch (Exception error) when (error is IOException or SocketException or AuthenticationException or HttpRequestException or OperationCanceledException or ObjectDisposedException)
         {
             if (isApi && !cancellation.IsCancellationRequested)
-                Diagnostic?.Invoke("光盘连接未能完成。请确认微信使用系统代理并接受临时证书；若仍失败，请停止采集。");
+                Diagnostic?.Invoke(CaptureDiagnostics.Failure(stage, error));
         }
         finally { clients.TryRemove(client, out _); client.Dispose(); limit.Release(); }
     }

@@ -121,7 +121,7 @@ public sealed class MainForm : Form
             SaveSettings();
             var helper = new WechatTokenCapture(); capture = helper;
             helper.Diagnostic += message => {
-                if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(() => { if (capture == helper) status.Text = message; }));
+                if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(() => { if (capture == helper) status.Text = CaptureDiagnostics.Describe(message); }));
             };
             helper.TokenFound += candidate => {
                 if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(async () => {

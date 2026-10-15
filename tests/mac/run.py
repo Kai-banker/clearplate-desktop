@@ -9,4 +9,4 @@ with tempfile.TemporaryDirectory(prefix='clearplate-synthetic-') as scratch:
     source = source[:start] + '    static let session = URL(fileURLWithPath: ' + '"' + str(folder/'session.json') + '")\n' + source[end:]
     (folder/'Core.swift').write_text(source)
     subprocess.run(['swiftc','-warnings-as-errors','-D','TESTING','-parse-as-library', str(folder/'Core.swift'), str(root/'src/ClearPlate.Mac/MacCapture.swift'), str(root/'src/ClearPlate.Mac/SessionVault.swift'), str(root/'tests/mac/Checks.swift'), '-o', str(folder/'checks')],check=True)
-    subprocess.run([str(folder/'checks')],check=True)
+    subprocess.run([str(folder/'checks'),str(root/'tests/mac')],check=True)

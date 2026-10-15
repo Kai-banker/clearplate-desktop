@@ -1,6 +1,6 @@
-# Mac 版 v1.2.2
+# Mac 版 v1.2.3
 
-下载 `ClearPlate-macOS-universal-v1.2.2.zip`，解压后将 `光盘打卡.app` 放在应用程序目录。支持 Apple Silicon / Intel，要求 macOS 15 或更高；采集组件自带 .NET 10 运行时，不需要额外安装。
+下载 `ClearPlate-macOS-universal-v1.2.3.zip`，解压后将 `光盘打卡.app` 放在应用程序目录。支持 Apple Silicon / Intel，要求 macOS 15 或更高；采集组件自带 .NET 10 运行时，不需要额外安装。
 
 该包使用本地 ad-hoc 签名，未使用 Apple Developer ID 签名或公证。若 macOS 阻止首次打开，请先核对发布页的 SHA256，再在“系统设置 → 隐私与安全性”允许该应用打开；无需关闭全局 Gatekeeper。
 
@@ -15,7 +15,7 @@
 
 旧的单独“打开微信小程序”按钮不启动采集。采集最多 3 分钟，也可随时点击“停止并恢复设置”。采集期间暂停提交计划。过期后仍需正常微信登录；不支持脱离微信自动重新登录。
 
-仅解密 `clearplate-api.guangpanxingdong.com`，其他 HTTPS 原样加密转发，不保存原始请求或流量日志。监听地址限本机，证书具有关键 DNS 名称约束，且用户信任限制为光盘 API 的 SSL 策略；根证书约 6 分钟有效，服务证书约 5 分钟有效，私钥仅在采集组件内存中。上游连接仍正常验证平台 HTTPS 证书。
+仅解密 `clearplate-api.guangpanxingdong.com`，其他 HTTPS 原样加密转发，不保存原始请求或流量日志。监听地址限本机，证书具有关键 DNS 名称约束，用户信任仅用于 SSL，域名范围由证书的关键 DNS 名称约束限制；不使用 Chromium 会忽略的系统主机限定信任规则；根证书约 6 分钟有效，服务证书约 5 分钟有效，私钥仅在采集组件内存中。上游连接仍正常验证平台 HTTPS 证书。
 
 临时改动仅涉及当前主要活动网络服务的 HTTP/HTTPS 代理、自动代理开关和绕过列表，不改变 DNS、VPN 或其他服务。当前 SOCKS 或认证代理启用时拒绝启动。代理恢复记录只含原设置和公钥证书，权限为 600。恢复每个字段前核对是否仍是工具设置，保留用户采集期间修改的设置。
 
@@ -55,3 +55,9 @@ python3 tests/mac/helper_tls.py artifacts/mac-arm64-helper/ClearPlate.MacCapture
 可用 `DOTNET=/path/to/dotnet bash scripts/build-mac.sh` 指定 SDK。构建支持两种 CPU 的统一安装包。测试使用临时目录、假账号及隔离证书信任，不启用系统代理，不修改系统信任，不上传或打卡。
 
 技术依据：[Apple SystemConfiguration 授权会话](https://developer.apple.com/documentation/systemconfiguration/scpreferencescreatewithauthorization(_:_:_:_:))、[.NET 10 macOS 支持列表](https://github.com/dotnet/core/blob/main/release-notes/10.0/supported-os.md)。
+
+## v1.2.3 修复
+
+修复 Chromium 内核忽略带主机字符串的 Mac 信任规则的问题，保持证书 DNS 约束、SSL 策略、短效有效期和仅签发 API 叶证书。修复临时证书删除方式，按精确 DER 核对后用 Keychain 返回的真实引用移除；不删除其他证书。错误提示现在区分 CLIENT_TLS、CLIENT_REQUEST、平台侧 HTTPS/DNS/超时及 HTTP 状态，诊断仅包含固定代码，不保存请求、token 或原始异常文本。
+
+参考：[Chromium 的 Mac 信任处理](https://chromium.googlesource.com/chromium/src/+/main/net/cert/internal/trust_store_mac.cc)、[Apple 精确删除 Keychain 项](https://developer.apple.com/documentation/security/secitemdelete(_:))。

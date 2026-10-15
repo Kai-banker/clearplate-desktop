@@ -70,6 +70,25 @@ internal static class CaptureChecks
             chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck; // Isolated synthetic test certificates have no CRL.
             Check(chain.Build(certificates.Server), "synthetic certificate chain validates against isolated root");
         }
+        foreach (var forbiddenHost in new[] { "unrelated.example", "child." + CaptureProtocol.ApiHost })
+        using (var otherKey = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256))
+        {
+            var request = new System.Security.Cryptography.X509Certificates.CertificateRequest("CN=" + forbiddenHost, otherKey, System.Security.Cryptography.HashAlgorithmName.SHA256);
+            var names = new SubjectAlternativeNameBuilder(); names.AddDnsName(forbiddenHost); request.CertificateExtensions.Add(names.Build());
+            request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+            using var unrelated = request.Create(certificates.Root, DateTimeOffset.UtcNow.AddSeconds(-10), DateTimeOffset.UtcNow.AddMinutes(1), System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
+            using var chain = new X509Chain();
+            chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+            chain.ChainPolicy.CustomTrustStore.Add(certificates.Root);
+            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            Check(!chain.Build(unrelated), "critical root name constraint rejects unrelated host even when root trusted");
+        }
+        Check(CaptureDiagnostics.Failure("client-tls", new IOException("fake-private-token")) == "CLIENT_TLS", "client TLS stage identified without exposing error text");
+        Check(CaptureDiagnostics.Failure("upstream", new HttpRequestException("fake-private-url", new System.Security.Authentication.AuthenticationException())) == "UPSTREAM_TLS", "upstream TLS differs from client TLS");
+        Check(CaptureDiagnostics.Failure("upstream", new HttpRequestException(HttpRequestError.NameResolutionError, "fake-private-url")) == "UPSTREAM_DNS", "DNS error classified independently");
+        Check(CaptureDiagnostics.Failure("upstream", new TaskCanceledException()) == "UPSTREAM_TIMEOUT", "upstream timeout classified");
+        Check(CaptureDiagnostics.Describe("HTTP_412").Contains("HTTP 412", StringComparison.Ordinal), "platform rejection does not blame certificate");
+        Check(!CaptureDiagnostics.Describe("fake-private-token").Contains("fake-private-token", StringComparison.Ordinal), "unknown code never echoed");
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
         try

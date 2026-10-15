@@ -16,6 +16,7 @@ try:
     pem = ssl.DER_cert_to_PEM_cert(base64.b64decode(ready['certificate']))
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.load_verify_locations(cadata=pem)
+    context.set_alpn_protocols(["h2", "http/1.1"])
     def tunnel():
         sock = socket.create_connection(('127.0.0.1',ready['port']),timeout=10)
         sock.sendall(b'CONNECT clearplate-api.guangpanxingdong.com:443 HTTP/1.1\r\nHost: clearplate-api.guangpanxingdong.com:443\r\n\r\n')

@@ -8,7 +8,7 @@ var gate = new object();
 void Send(object value) { lock (gate) { Console.Out.WriteLine(JsonSerializer.Serialize(value)); Console.Out.Flush(); } }
 var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 capture.TokenFound += token => Send(new { type = "token", token });
-capture.Diagnostic += _ => Send(new { type = "diagnostic" });
+capture.Diagnostic += code => Send(new { type = "diagnostic", code });
 var port = capture.Start();
 if (args.Contains("--self-test")) { Console.WriteLine("Loopback capture listener started; no system proxy or trust was changed."); return 0; }
 Send(new { type = "ready", port, certificate = Convert.ToBase64String(capture.PublicRoot) });

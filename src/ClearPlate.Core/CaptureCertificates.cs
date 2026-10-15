@@ -23,7 +23,13 @@ public sealed class CaptureCertificates : IDisposable
         constraints.PushSequence(permitted);
         constraints.PushSequence();
         constraints.WriteCharacterString(UniversalTagNumber.IA5String, CaptureProtocol.ApiHost, new Asn1Tag(TagClass.ContextSpecific, 2));
-        constraints.PopSequence(); constraints.PopSequence(permitted); constraints.PopSequence();
+        constraints.PopSequence(); constraints.PopSequence(permitted);
+        // A plain DNS subtree also permits children. Exclude those to retain only
+        // the exact API hostname when Chromium-compatible SSL trust is used.
+        var excluded = new Asn1Tag(TagClass.ContextSpecific, 1, true);
+        constraints.PushSequence(excluded); constraints.PushSequence();
+        constraints.WriteCharacterString(UniversalTagNumber.IA5String, "." + CaptureProtocol.ApiHost, new Asn1Tag(TagClass.ContextSpecific, 2));
+        constraints.PopSequence(); constraints.PopSequence(excluded); constraints.PopSequence();
         request.CertificateExtensions.Add(new X509Extension("2.5.29.30", constraints.Encode(), true));
         Root = request.CreateSelfSigned(now.AddMinutes(-1), now.AddMinutes(6));
         using var serverKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
