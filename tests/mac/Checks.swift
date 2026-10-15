@@ -50,6 +50,20 @@ final class MockHTTP: URLProtocol {
         let constraint = trust[0] as! NSDictionary
         check(constraint[kSecTrustSettingsPolicyString] as? String == "clearplate-api.guangpanxingdong.com", "OS SSL hostname constraint explicit")
         check(constraint[kSecTrustSettingsAllowedError] == nil, "no ignored certificate errors")
+        do {
+            let mutex = try MacCaptureRecovery.RecoveryLock()
+            check(mutex.closesOnExec, "recovery lock is not inherited by watchdog/helper")
+            defer { withExtendedLifetime(mutex) {} }
+            let path = MacCaptureRecovery.file.deletingLastPathComponent().appendingPathComponent("capture-recovery.lock")
+            let other = open(path.path, O_RDWR)
+            check(other >= 0 && flock(other, LOCK_EX | LOCK_NB) != 0, "recovery lock excludes concurrent capture/cleanup")
+            close(other)
+        }
+        do {
+            let mutex = try MacCaptureRecovery.RecoveryLock()
+            defer { withExtendedLifetime(mutex) {} }
+            count += 1
+        }
         let original = ["HTTPEnable": 0, "HTTPProxy": "previous.example", "HTTPPort": 8080, "HTTPSEnable": 0, "Unrelated": 7, "ProxyAutoConfigEnable": 1] as [String: Any]
         let installed = MacCaptureRecovery.installed(port: 23456)
         var temporary = original; installed.forEach { temporary[$0.key] = $0.value }

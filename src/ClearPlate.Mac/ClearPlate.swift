@@ -602,7 +602,7 @@ struct PlateView: View {
                     Text("每天 08:00 / 12:00 / 18:00 · 北京时间").foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("v1.2.0 试验版").font(.caption).padding(6).background(Color.orange.opacity(0.12)).cornerRadius(6)
+                Text("v1.2.1 试验版").font(.caption).padding(6).background(Color.orange.opacity(0.12)).cornerRadius(6)
             }
             Divider()
             Text(model.account).font(.headline)
@@ -696,7 +696,7 @@ struct PlateApp: App {
         let commandOnly = ["--capture-watchdog", "--check-default-photo", "--check-only"].contains { CommandLine.arguments.contains($0) }
         if !commandOnly {
             do { try LocalStore.prepare() } catch { exit(1) }
-            instanceLock = open(LocalStore.session.deletingLastPathComponent().appendingPathComponent("instance.lock").path, O_CREAT | O_RDWR, 0o600)
+            instanceLock = open(LocalStore.session.deletingLastPathComponent().appendingPathComponent("instance.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
             if instanceLock < 0 || flock(instanceLock, LOCK_EX | LOCK_NB) != 0 {
                 let alert = NSAlert(); alert.messageText = "光盘打卡已经运行"; alert.informativeText = "请使用已打开的窗口，避免重复提交。"; alert.runModal(); exit(1)
             }

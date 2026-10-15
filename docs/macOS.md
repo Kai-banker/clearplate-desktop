@@ -1,6 +1,6 @@
-# Mac 版 v1.2.0
+# Mac 版 v1.2.1
 
-下载 `ClearPlate-macOS-universal-v1.2.0.zip`，解压后将 `光盘打卡.app` 放在应用程序目录。支持 Apple Silicon / Intel，要求 macOS 15 或更高；采集组件自带 .NET 10 运行时，不需要额外安装。
+下载 `ClearPlate-macOS-universal-v1.2.1.zip`，解压后将 `光盘打卡.app` 放在应用程序目录。支持 Apple Silicon / Intel，要求 macOS 15 或更高；采集组件自带 .NET 10 运行时，不需要额外安装。
 
 该包使用本地 ad-hoc 签名，未使用 Apple Developer ID 签名或公证。若 macOS 阻止首次打开，请先核对发布页的 SHA256，再在“系统设置 → 隐私与安全性”允许该应用打开；无需关闭全局 Gatekeeper。
 
@@ -25,7 +25,7 @@
 
 本机数据位于 `~/Library/Application Support/ClearPlateDesktop/`：
 
-- `session.json`：AES-GCM 加密的会话，密钥单独保存在用户登录钥匙串。更换 Mac 或钥匙串后需重新获取自己的会话。不要删除钥匙串中的 `ClearPlate local session encryption` 项。
+- `session.json`：AES-GCM 加密的会话，密钥单独保存在用户登录钥匙串。更换 Mac 或钥匙串后需重新获取自己的会话。更新 ad-hoc 签名的应用后，系统可能要求再次允许本工具读取该密钥。不要删除钥匙串中的 `ClearPlate local session encryption` 项。
 - `settings.json`：计划、位置、组织和防重复打卡记录，权限为 600。不要公开这些文件或删除记录来重复提交。
 - `capture-recovery.plist`：临时采集恢复记录，正常恢复后删除。
 

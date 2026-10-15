@@ -54,6 +54,21 @@ enum MacCaptureRecovery {
             throw PlateError.message("网络设置未能保存；系统可能需要管理员授权。")
         }
     }
+    final class RecoveryLock {
+        private let descriptor: Int32
+        init() throws {
+            try LocalStore.prepare()
+            let lock = file.deletingLastPathComponent().appendingPathComponent("capture-recovery.lock")
+            let opened = open(lock.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+            guard opened >= 0 else { throw PlateError.message("无法创建恢复互斥锁。") }
+            guard flock(opened, LOCK_EX) == 0 else { close(opened); throw PlateError.message("无法锁定恢复记录。") }
+            descriptor = opened
+        }
+#if TESTING
+        var closesOnExec: Bool { fcntl(descriptor, F_GETFD) & FD_CLOEXEC != 0 }
+#endif
+        deinit { flock(descriptor, LOCK_UN); close(descriptor) }
+    }
     static func trustSettings() -> CFArray {
         let host = "clearplate-api.guangpanxingdong.com"
         let policy = SecPolicyCreateSSL(true, host as CFString)
@@ -63,6 +78,8 @@ enum MacCaptureRecovery {
         return trust as CFArray
     }
     static func activate(port: Int, der: Data, alive: () -> Bool) throws -> String {
+        let mutex = try RecoveryLock()
+        defer { withExtendedLifetime(mutex) {} }
         guard !FileManager.default.fileExists(atPath: file.path), let cert = SecCertificateCreateWithData(nil, der as CFData),
               (SecCertificateCopySubjectSummary(cert) as String?)?.hasPrefix("ClearPlate temporary login capture ") == true else {
             throw PlateError.message("恢复记录尚未处理或临时证书异常。")
@@ -113,6 +130,9 @@ enum MacCaptureRecovery {
         return id
     }
     static func restore(expected: String? = nil) throws {
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        let mutex = try RecoveryLock()
+        defer { withExtendedLifetime(mutex) {} }
         guard FileManager.default.fileExists(atPath: file.path) else { return }
         guard let record = try PropertyListSerialization.propertyList(from: Data(contentsOf: file), format: nil) as? [String: Any],
               let id = record["id"] as? String, let path = record["path"] as? String, path.hasPrefix("/NetworkServices/"), path.hasSuffix("/Proxies"),

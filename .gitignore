@@ -21,3 +21,4 @@ instance.lock
 **/*.dSYM/
 **/__pycache__/
 *.p12
+capture-recovery.lock
