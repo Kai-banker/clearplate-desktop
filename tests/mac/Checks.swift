@@ -8,13 +8,21 @@ final class MockHTTP: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.requests += 1
-        if Self.mode == "offline" { client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)); return }
+        let route = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "r" }?.value ?? ""
+        if Self.mode == "offline" || (Self.mode == "upload-offline" && request.url?.host == "clearplateimg.guangpanxingdong.com")
+            || (Self.mode == "submit-offline" && route == "/user-clear-plate/clear-plate") {
+            client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)); return
+        }
         let status = Self.mode == "401" ? 401 : Self.mode == "500" ? 500 : 200
         let token = request.value(forHTTPHeaderField: "x-token") ?? ""
         let id = Self.mode == "wrong" || token == "fake-other" ? "B" : "A"
         var data: [String: Any] = ["user_id": id, "nickname": "测试账号", "clearplate_num_success": 10, "today_clearplate_num": 2, "last_clearplate_clock_time": 1000]
         if Self.mode == "rotation", token == "fake-old" { data["token"] = "fake-new" }
         if Self.mode == "wrong-rotation", token == "fake-old" { data["token"] = "fake-other" }
+        if ["upload-offline", "submit-offline"].contains(Self.mode), route == "/upload/my-upload" {
+            data = ["host": "https://clearplateimg.guangpanxingdong.com", "dir": "clockImg/" + PlateAPI.day(format: "yyyy/MM/dd") + "/",
+                "policy": "fake-policy", "accessid": "fake-access", "signature": "fake-signature", "expire": Date().timeIntervalSince1970 + 600]
+        }
         let code = Self.mode == "expired" ? 10003 : 10007
         let body = try! JSONSerialization.data(withJSONObject: ["code": code, "data": data])
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil)!, cacheStoragePolicy: .notAllowed)
@@ -201,6 +209,63 @@ final class MockHTTP: URLProtocol {
         try LocalStore.save(recovered)
         _ = try locked.currentConfig(requireLocation: false)
         check(!locked.localSessionBlocked && locked.group == "123" && locked.location == "1,2", "session recovery keeps stored settings instead of overwriting with blank fields")
+        // Old terminal preparation failures must not consume a slot forever.
+        let safe = ["stage": "准备照片", "outcome": "未成功", "message": "synthetic keychain failure", "updated_at": "2026-10-15 10:09:45"]
+        check(PreUploadRecovery.canRelease(safe), "legacy preparation failure is proven unsubmitted")
+        check(PreUploadRecovery.canRelease(["stage": "查询账号", "outcome": "未成功"]), "legacy terminal account failure precedes upload")
+        for unsafe in [[:], ["stage": "准备照片", "outcome": "执行中"], ["stage": "上传照片", "outcome": "未成功"],
+            ["stage": "提交打卡", "outcome": "结果未确认"], ["stage": "准备照片", "outcome": "未成功", "upload_started": "true"],
+            ["stage": "准备照片", "outcome": "未成功", "submission_started": "true"]] {
+            check(!PreUploadRecovery.canRelease(unsafe), "missing/in-flight/uploaded/uncertain records stay protected")
+        }
+        let retrySlotKey = PlateSchedule.key("12:00"), confirmedKey = PlateSchedule.key("08:00"), unknownKey = PlateSchedule.key("18:00")
+        try LocalStore.save(config)
+        try LocalStore.saveSettings(["schedule": false, "selected_slot": "12:00", "attempted_slots": [retrySlotKey, confirmedKey, unknownKey],
+            "confirmed_slots": [confirmedKey], "slot_details": [retrySlotKey: safe, confirmedKey: safe]])
+        let migrated = PlateModel(); migrated.timer?.invalidate()
+        check(!migrated.attemptedSlots.contains(retrySlotKey), "startup releases only proven pre-upload failure")
+        check(migrated.attemptedSlots.contains(confirmedKey) && migrated.attemptedSlots.contains(unknownKey), "confirmed and unknown guards survive recovery")
+        check(migrated.slotDetails[retrySlotKey]?["message"] == safe["message"] && migrated.slotDetails[retrySlotKey]?["updated_at"] == safe["updated_at"], "recovery preserves original failure and time")
+        check(migrated.attemptExplanation("12:00", key: retrySlotKey).contains("手动重试"), "recovered record explains manual retry")
+        let recoveredRestart = PlateModel(); recoveredRestart.timer?.invalidate()
+        check(!recoveredRestart.attemptedSlots.contains(retrySlotKey) && recoveredRestart.slotDetails[retrySlotKey]?["retry_policy"] == "manual", "recovery persists and is idempotent")
+        recoveredRestart.schedule = true; recoveredRestart.status = "synthetic: no automatic retry"
+        recoveredRestart.tick(at: date(PlateAPI.day() + "T12:00:00+08:00"))
+        check(recoveredRestart.status == "synthetic: no automatic retry" && !recoveredRestart.busy, "recovered failure is never automatically backfilled")
+        recoveredRestart.schedule = false
+        check(recoveredRestart.allowsAttempt("12:00", key: retrySlotKey), "explicit manual retry is allowed after recovery")
+        let photo = fixture.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("src/ClearPlate.Mac/plate.png")
+        func idle(_ model: PlateModel) async throws {
+            for _ in 0..<1000 {
+                if !model.busy { return }
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+            fatalError("synthetic submission did not finish")
+        }
+        recoveredRestart.makeAPI = { PlateAPI($0, protocolClasses: [MockHTTP.self]) }
+        let requestsBeforePhoto = MockHTTP.requests
+        recoveredRestart.submitPhoto(fixture.appendingPathComponent("missing.png"), slot: "12:00")
+        try await idle(recoveredRestart)
+        check(!recoveredRestart.attemptedSlots.contains(retrySlotKey) && MockHTTP.requests == requestsBeforePhoto, "photo read failure never consumes slot or sends request")
+        check(recoveredRestart.slotDetails[retrySlotKey]?["retry_policy"] == "manual", "local preparation error requires explicit retry")
+        MockHTTP.mode = "offline"
+        recoveredRestart.submitPhoto(photo, slot: "12:00"); try await idle(recoveredRestart)
+        check(!recoveredRestart.attemptedSlots.contains(retrySlotKey) && recoveredRestart.slotDetails[retrySlotKey]?["outcome"] == "等待网络", "account offline remains retryable before upload")
+        MockHTTP.mode = "500"
+        recoveredRestart.submitPhoto(photo, slot: "12:00"); try await idle(recoveredRestart)
+        check(!recoveredRestart.attemptedSlots.contains(retrySlotKey) && recoveredRestart.slotDetails[retrySlotKey]?["retry_policy"] == "manual", "pre-upload server failure permits manual retry without automatic loop")
+        MockHTTP.mode = "upload-offline"
+        recoveredRestart.submitPhoto(photo, slot: "12:00"); try await idle(recoveredRestart)
+        check(recoveredRestart.attemptedSlots.contains(retrySlotKey) && recoveredRestart.slotDetails[retrySlotKey]?["upload_started"] == "true", "upload network failure keeps persisted duplicate protection")
+        let uploadRestart = PlateModel(); uploadRestart.timer?.invalidate()
+        check(!uploadRestart.allowsAttempt("12:00", key: retrySlotKey), "upload protection survives restart")
+        uploadRestart.makeAPI = { PlateAPI($0, protocolClasses: [MockHTTP.self]) }
+        uploadRestart.attemptedSlots.remove(unknownKey); MockHTTP.mode = "submit-offline"
+        uploadRestart.submitPhoto(photo, slot: "18:00"); try await idle(uploadRestart)
+        check(uploadRestart.attemptedSlots.contains(unknownKey) && uploadRestart.slotDetails[unknownKey]?["submission_started"] == "true"
+            && uploadRestart.slotDetails[unknownKey]?["outcome"] == "结果未确认", "uncertain submission remains protected")
+        uploadRestart.success = true
+        check(!uploadRestart.allowsAttempt("18:00", key: unknownKey) && !uploadRestart.success, "blocked/error prompt never inherits a green success state")
         print("Mac checks passed: \(count). Synthetic requests only; no system proxy/trust changes.")
     }
 }

@@ -288,6 +288,17 @@ enum PreflightRetry {
     }
 }
 
+enum PreUploadRecovery {
+    static func canRelease(_ detail: [String: String]) -> Bool {
+        // Only a terminal failure in a stage preceding every upload is proof.
+        // Missing/in-flight details and any persisted network boundary stay locked.
+        guard [nil, "false"].contains(detail["upload_started"]),
+              [nil, "false"].contains(detail["submission_started"]),
+              ["准备照片", "查询账号"].contains(detail["stage"] ?? "") else { return false }
+        return ["未成功", "未提交", "等待本机会话", "等待条件", "等待网络"].contains(detail["outcome"] ?? "")
+    }
+}
+
 @MainActor final class PlateModel: ObservableObject {
     @Published var group = ""
     @Published var location = ""
@@ -324,6 +335,7 @@ enum PreflightRetry {
         needsLogin = s["needs_login"] as? Bool ?? false
         if let slot = s["selected_slot"] as? String, PlateSchedule.times.contains(slot) { selectedSlot = slot }
         schedule = s["schedule"] as? Bool ?? false
+        recoverUnsubmittedAttempts()
         if confirmedSlots.contains(PlateSchedule.key(selectedSlot)) {
             success = true; status = "今天 \(selectedSlot) 时段已核对成功，其他时段仍按计划执行。"
         } else if attemptedSlots.contains(PlateSchedule.key(selectedSlot)) {
@@ -331,6 +343,7 @@ enum PreflightRetry {
         }
         if needsLogin { status = PlateError.authenticationRequired.localizedDescription }
         if localSessionBlocked { status = "本机会话暂不可读取。请允许系统钥匙串授权，然后在“更多”中检查账号状态；自动提交已暂停。" }
+        if storageFailed { status = "本地记录保存失败，已停止自动提交，请检查磁盘和目录权限后重启工具。" }
         timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
@@ -347,6 +360,21 @@ enum PreflightRetry {
             status = "本地记录保存失败，已停止自动提交，请检查磁盘和目录权限后重启工具。"
             return false
         }
+    }
+    @discardableResult func recoverUnsubmittedAttempts() -> Bool {
+        let released = attemptedSlots.filter {
+            !confirmedSlots.contains($0) && PreUploadRecovery.canRelease(slotDetails[$0] ?? [:])
+        }
+        guard !released.isEmpty else { return true }
+        for key in released {
+            attemptedSlots.remove(key)
+            // Keep the original error, stage and time. Recovery never backfills
+            // old slots automatically; only an explicit manual retry may proceed.
+            slotDetails[key]?["retry_policy"] = "manual"
+            slotDetails[key]?["upload_started"] = "false"
+            slotDetails[key]?["submission_started"] = "false"
+        }
+        return persist()
     }
     @discardableResult func recordSlot(_ key: String, stage: String, outcome: String = "执行中", message: String = "", error: Error? = nil, at date: Date = Date()) -> Bool {
         var detail = slotDetails[key] ?? [:]
@@ -379,8 +407,14 @@ enum PreflightRetry {
             let stage = detail["stage"] ?? "阶段未记录"
             let outcome = detail["outcome"] ?? "结果未确认"
             let message = detail["message"] ?? ""
+            if !attemptedSlots.contains(key), detail["retry_policy"] == "manual" {
+                return "\(slot) 上次记录：\(time)，阶段「\(stage)」失败，尚未上传照片或提交打卡。\(message) 问题解决后可点击“立即打卡”手动重试；仍会检查平台次数及两小时间隔。"
+            }
             if outcome == "等待网络" {
                 return "\(slot) 上次记录：\(time)，查询账号时网络故障，尚未上传照片或提交打卡。\(message) 网络恢复后仅在 \(slot) 开始后的 5 分钟窗口内自动重试；错过窗口不会补交。"
+            }
+            if outcome == "等待条件" {
+                return "\(slot) 上次检查：\(time)，尚未上传照片或提交打卡。\(message) 条件满足后仅在原时段的 5 分钟窗口内自动重试，也可手动重试。"
             }
             if stage == "查询账号", outcome == "未成功", message == "The Internet connection appears to be offline." {
                 return "\(slot) 上次记录：\(time)，查询账号时网络离线，尚未上传照片或提交打卡。此记录由旧版标记为已尝试，未自动补交；新版已修正提交前网络故障的重试逻辑。"
@@ -406,12 +440,14 @@ enum PreflightRetry {
             let key = PlateSchedule.key(slot)
             let result = confirmedSlots.contains(key) ? "成功" : attemptedSlots.contains(key)
                 ? (slotDetails[key]?["outcome"] == "未成功" ? "未成功" : "已尝试（未确认）")
-                : (slotDetails[key]?["outcome"] == "等待网络" ? "未提交（网络故障）" : "待执行")
+                : (slotDetails[key]?["retry_policy"] == "manual" ? "未提交（可手动重试）"
+                    : slotDetails[key]?["outcome"] == "等待网络" ? "未提交（网络故障）" : "待执行")
             return slot + " " + result
         }.joined(separator: " · ")
     }
     func allowsAttempt(_ slot: String, key: String) -> Bool {
         guard !busy, !capturing, !storageFailed, !localSessionBlocked, PlateSchedule.times.contains(slot) else { return false }
+        success = false
         if FileManager.default.fileExists(atPath: MacCaptureRecovery.file.path) {
             status = "临时网络设置尚未恢复，请重新启动工具并允许系统恢复授权。"; return false
         }
@@ -420,10 +456,10 @@ enum PreflightRetry {
         if attemptedSlots.contains(key) { status = attemptExplanation(slot, key: key); return false }
         return true
     }
-    func tick() {
-        guard schedule && !busy && !capturing && !needsLogin && !storageFailed && !localSessionBlocked, !FileManager.default.fileExists(atPath: MacCaptureRecovery.file.path), let slot = PlateSchedule.dueSlot() else { return }
-        let key = PlateSchedule.key(slot)
-        guard !attemptedSlots.contains(key), !confirmedSlots.contains(key) else { return }
+    func tick(at date: Date = Date()) {
+        guard schedule && !busy && !capturing && !needsLogin && !storageFailed && !localSessionBlocked, !FileManager.default.fileExists(atPath: MacCaptureRecovery.file.path), let slot = PlateSchedule.dueSlot(at: date) else { return }
+        let key = PlateSchedule.key(slot, at: date)
+        guard !attemptedSlots.contains(key), !confirmedSlots.contains(key), slotDetails[key]?["retry_policy"] != "manual" else { return }
         selectedSlot = slot; submitDefaultPhoto(slot: slot)
     }
     func currentConfig(requireLocation: Bool = true) throws -> SessionConfig {
@@ -571,6 +607,9 @@ enum PreflightRetry {
         let key = PlateSchedule.key(slot)
         guard allowsAttempt(slot, key: key) else { return }
         attemptedSlots.insert(key)
+        slotDetails[key, default: [:]]["upload_started"] = "false"
+        slotDetails[key]?["submission_started"] = "false"
+        slotDetails[key]?.removeValue(forKey: "retry_policy")
         guard recordSlot(key, stage: "准备照片") else { return }
         busy = true; success = false
         Task {
@@ -580,21 +619,23 @@ enum PreflightRetry {
             var submissionRejected = false
             var stage = "准备照片"
             do {
-                let config = try currentConfig(), api = PlateAPI(config)
+                let config = try currentConfig(), api = makeAPI(config)
                 let data = try Data(contentsOf: url)
                 guard data.count >= 1024 && data.count <= 20 * 1024 * 1024, let image = NSImage(data: data), image.size.width > 0 else {
                     throw PlateError.message("请选择 1 KB 至 20 MB 的有效 JPG 或 PNG 照片。")
                 }
                 status = "正在核对 \(slot) 时段打卡前的账号记录…"
-                stage = "查询账号"; recordSlot(key, stage: stage)
+                stage = "查询账号"; guard recordSlot(key, stage: stage) else { throw PlateError.message("本地记录保存失败，没有查询或上传。") }
                 let before = try await api.user(); account = before.nickname
                 if let reason = PreflightRules.reason(before) { throw PlateError.preflightWait(reason) }
                 status = "正在上传照片…"
+                slotDetails[key]?["upload_started"] = "true"
                 stage = "上传照片"; guard recordSlot(key, stage: stage) else { throw PlateError.message("本地记录保存失败，没有开始上传。") }
                 let ext = url.pathExtension.lowercased() == "png" ? "png" : "jpg"
                 uploadStarted = true
                 let path = try await api.upload(data, mime: ext == "png" ? "image/png" : "image/jpeg", ext: ext)
                 status = "照片已上传，正在提交打卡…"
+                slotDetails[key]?["submission_started"] = "true"
                 stage = "提交打卡"; guard recordSlot(key, stage: stage) else { throw PlateError.message("本地记录保存失败，没有提交打卡。") }
                 submissionStarted = true
                 let result = try await api.api("/user-clear-plate/clear-plate", form: ["group_id": config.group_id, "path_url": path, "location": config.location])
@@ -616,27 +657,24 @@ enum PreflightRetry {
                 success = true
                 status = "\(slot) 时段打卡成功，已核对账号记录。其他时段仍按计划执行。"
             } catch {
-                if !uploadStarted, localSessionBlocked {
+                if !uploadStarted {
                     attemptedSlots.remove(key)
-                    recordSlot(key, stage: stage, outcome: "等待本机会话", message: error.localizedDescription, error: error)
-                    status = "本机会话无法读取，没有上传或提交。请允许钥匙串授权后检查账号状态。"
-                    return
-                }
-                if !uploadStarted, let failure = error as? PlateError, case .preflightWait = failure {
-                    attemptedSlots.remove(key)
-                    recordSlot(key, stage: stage, outcome: "等待条件", message: error.localizedDescription)
-                    status = error.localizedDescription; return
-                }
-                if !uploadStarted, stage == "查询账号", PreflightRetry.isTransientNetwork(error) {
-                    attemptedSlots.remove(key)
-                    recordSlot(key, stage: stage, outcome: "等待网络", message: error.localizedDescription, error: error)
+                    slotDetails[key]?["upload_started"] = "false"
+                    slotDetails[key]?["submission_started"] = "false"
+                    var outcome = localSessionBlocked ? "等待本机会话" : "未提交"
+                    var automatic = false
+                    if let failure = error as? PlateError, case .preflightWait = failure {
+                        outcome = "等待条件"; automatic = true
+                    } else if stage == "查询账号", PreflightRetry.isTransientNetwork(error) {
+                        outcome = "等待网络"; automatic = true
+                    }
+                    slotDetails[key]?["retry_policy"] = automatic ? "automatic" : "manual"
+                    guard recordSlot(key, stage: stage, outcome: outcome, message: error.localizedDescription, error: error) else { return }
+                    handle(error)
                     status = attemptExplanation(slot, key: key)
                     return
                 }
                 recordSlot(key, stage: stage, outcome: submissionStarted && !submissionRejected ? "结果未确认" : "未成功", message: error.localizedDescription, error: error)
-                if !uploadStarted, let plateError = error as? PlateError, case .authenticationRequired = plateError {
-                    attemptedSlots.remove(key); persist()
-                }
                 handle(error)
             }
         }
