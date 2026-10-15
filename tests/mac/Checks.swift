@@ -141,6 +141,13 @@ final class MockHTTP: URLProtocol {
         check(LocalStore.settingsData()["attempted_slots"] as? [String] == ["2026-10-15@12:00"], "migration preserves duplicate guard")
         check(!(try String(contentsOf: LocalStore.session, encoding: .utf8)).contains("fake-old"), "migration encrypts legacy token")
         do { try LocalStore.importLegacy(legacy); fatalError("migration overwrote data") } catch { count += 1 }
+        try Data("invalid encrypted session".utf8).write(to: LocalStore.session)
+        let locked = PlateModel(); locked.timer?.invalidate()
+        check(locked.localSessionBlocked && !locked.allowsAttempt("18:00", key: PlateSchedule.key("18:00")), "unreadable local session pauses submissions")
+        var recovered = config; recovered.group_id = "123"; recovered.location = "1,2"
+        try LocalStore.save(recovered)
+        _ = try locked.currentConfig(requireLocation: false)
+        check(!locked.localSessionBlocked && locked.group == "123" && locked.location == "1,2", "session recovery keeps stored settings instead of overwriting with blank fields")
         print("Mac checks passed: \(count). Synthetic requests only; no system proxy/trust changes.")
     }
 }

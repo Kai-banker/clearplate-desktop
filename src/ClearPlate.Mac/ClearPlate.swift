@@ -304,13 +304,16 @@ enum PreflightRetry {
     @Published var showLoginAlert = false
     @Published var showTokenImport = false
     @Published var tokenDraft = ""
+    @Published var localSessionBlocked = false
     @Published var storageFailed = false
     @Published var capturing = false
     var capture: MacTokenCapture?
     var timer: Timer?
     var legacyConfirmedDay = ""
     init() {
-        if let c = try? LocalStore.load() { group = c.group_id; location = c.location }
+        do {
+            let c = try LocalStore.load(); group = c.group_id; location = c.location
+        } catch { localSessionBlocked = true }
         let s = LocalStore.settingsData()
         attemptedSlots = Set(s["attempted_slots"] as? [String] ?? [])
         confirmedSlots = Set(s["confirmed_slots"] as? [String] ?? [])
@@ -326,6 +329,7 @@ enum PreflightRetry {
             status = attemptExplanation(selectedSlot, key: PlateSchedule.key(selectedSlot))
         }
         if needsLogin { status = PlateError.authenticationRequired.localizedDescription }
+        if localSessionBlocked { status = "本机会话暂不可读取。请允许系统钥匙串授权，然后在“更多”中检查账号状态；自动提交已暂停。" }
         timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
@@ -406,7 +410,7 @@ enum PreflightRetry {
         }.joined(separator: " · ")
     }
     func allowsAttempt(_ slot: String, key: String) -> Bool {
-        guard !busy, !capturing, !storageFailed, PlateSchedule.times.contains(slot) else { return false }
+        guard !busy, !capturing, !storageFailed, !localSessionBlocked, PlateSchedule.times.contains(slot) else { return false }
         if FileManager.default.fileExists(atPath: MacCaptureRecovery.file.path) {
             status = "临时网络设置尚未恢复，请重新启动工具并允许系统恢复授权。"; return false
         }
@@ -416,13 +420,18 @@ enum PreflightRetry {
         return true
     }
     func tick() {
-        guard schedule && !busy && !capturing && !needsLogin && !storageFailed, !FileManager.default.fileExists(atPath: MacCaptureRecovery.file.path), let slot = PlateSchedule.dueSlot() else { return }
+        guard schedule && !busy && !capturing && !needsLogin && !storageFailed && !localSessionBlocked, !FileManager.default.fileExists(atPath: MacCaptureRecovery.file.path), let slot = PlateSchedule.dueSlot() else { return }
         let key = PlateSchedule.key(slot)
         guard !attemptedSlots.contains(key), !confirmedSlots.contains(key) else { return }
         selectedSlot = slot; submitDefaultPhoto(slot: slot)
     }
     func currentConfig(requireLocation: Bool = true) throws -> SessionConfig {
-        var config = try LocalStore.load()
+        var config: SessionConfig
+        do { config = try LocalStore.load() }
+        catch { localSessionBlocked = true; throw error }
+        if localSessionBlocked {
+            group = config.group_id; location = config.location; localSessionBlocked = false
+        }
         let parts = location.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
         guard !requireLocation || (parts.count == 2 && parts.allSatisfy { $0.isFinite } && abs(parts[0]) <= 90 && abs(parts[1]) <= 180) else {
             throw PlateError.message("请填写真实打卡位置，格式为纬度,经度。")
@@ -570,6 +579,12 @@ enum PreflightRetry {
                 success = true
                 status = "\(slot) 时段打卡成功，已核对账号记录。其他时段仍按计划执行。"
             } catch {
+                if !uploadStarted, localSessionBlocked {
+                    attemptedSlots.remove(key)
+                    recordSlot(key, stage: stage, outcome: "等待本机会话", message: error.localizedDescription, error: error)
+                    status = "本机会话无法读取，没有上传或提交。请允许钥匙串授权后检查账号状态。"
+                    return
+                }
                 if !uploadStarted, let failure = error as? PlateError, case .preflightWait = failure {
                     attemptedSlots.remove(key)
                     recordSlot(key, stage: stage, outcome: "等待条件", message: error.localizedDescription)
@@ -602,7 +617,7 @@ struct PlateView: View {
                     Text("每天 08:00 / 12:00 / 18:00 · 北京时间").foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("v1.2.1 试验版").font(.caption).padding(6).background(Color.orange.opacity(0.12)).cornerRadius(6)
+                Text("v1.2.2 试验版").font(.caption).padding(6).background(Color.orange.opacity(0.12)).cornerRadius(6)
             }
             Divider()
             Text(model.account).font(.headline)
@@ -634,19 +649,23 @@ struct PlateView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack(spacing: 12) {
-                Button("检查并同步 token") { model.check() }
-                Button("用默认照片打卡") { model.submitDefaultPhoto() }.buttonStyle(.borderedProminent).tint(.green)
-                Button("选择其他照片") { model.choosePhoto() }
+                Button("立即打卡") { model.submitDefaultPhoto() }
+                    .buttonStyle(.borderedProminent).tint(.green)
+                    .help("使用默认照片提交当前所选时段")
+                    .disabled(model.busy || model.capturing || model.localSessionBlocked)
+                Button("连接微信") { model.startCapture() }
+                    .help("打开小程序并自动同步本人登录状态")
+                    .disabled(model.busy || model.capturing)
+                Menu("更多") {
+                    Button("选择照片打卡…") { model.choosePhoto() }.disabled(model.localSessionBlocked)
+                    Button("检查账号状态") { model.check() }
+                    Divider()
+                    Button("打开光盘小程序") { model.openMiniProgram() }
+                    Button("手动导入登录凭据…") { model.showTokenImport = true }
+                }.disabled(model.busy || model.capturing)
+                if model.capturing { Button("停止连接") { model.stopCapture() } }
                 if model.busy { ProgressView().controlSize(.small) }
-            }.disabled(model.busy || model.capturing)
-            HStack(spacing: 12) {
-                Button("从微信自动获取 token") { model.startCapture() }.disabled(model.busy || model.capturing)
-                if model.capturing { Button("停止并恢复设置") { model.stopCapture() } }
             }
-            HStack(spacing: 12) {
-                Button("打开微信小程序") { model.openMiniProgram() }
-                Button("导入新 token") { model.showTokenImport = true }
-            }.disabled(model.busy || model.capturing)
             Text(model.status).font(.callout).foregroundStyle(model.success ? Color.green : Color.primary)
                 .frame(maxWidth: .infinity, minHeight: 55, alignment: .leading)
                 .padding(12).background(Color.gray.opacity(0.08)).cornerRadius(8)
@@ -663,7 +682,7 @@ struct PlateView: View {
         }
         .sheet(isPresented: $model.showTokenImport) {
             VStack(alignment: .leading, spacing: 16) {
-                Text("导入本人新登录 token").font(.headline)
+                Text("手动导入登录凭据").font(.headline)
                 Text("从本人正常登录请求中取得 X-Token。只向光盘平台核验，账号一致后才替换原会话。")
                 SecureField("粘贴完整 X-Token", text: $model.tokenDraft).textFieldStyle(.roundedBorder)
                 Text(model.status).font(.callout)
