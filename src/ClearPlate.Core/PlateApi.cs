@@ -100,13 +100,24 @@ public sealed class PlateApi(HttpClient http, Func<DateTimeOffset>? clock = null
             throw new BusinessException(0, "上传凭证格式或目标地址异常，未上传照片。");
         var key = prefix + Guid.NewGuid().ToString("N") + "." + extension;
         using var body = new MultipartFormDataContent();
+        // The upload gateway rejects .NET's default multipart headers. Match
+        // browser forms: bare boundary, quoted names, no text-part Content-Type,
+        // and Content-Disposition before the file Content-Type (file stays last).
+        var boundary = body.Headers.ContentType!.Parameters.Single(p => p.Name == "boundary");
+        boundary.Value = boundary.Value!.Trim('"');
         foreach (var pair in new Dictionary<string, string> {
             ["key"] = key, ["policy"] = Text(data, "policy"), ["OSSAccessKeyId"] = Text(data, "accessid"),
             ["success_action_status"] = "200", ["signature"] = Text(data, "signature"), ["Content-Type"] = mime })
-            body.Add(new StringContent(pair.Value), pair.Key);
+        {
+            var field = new StringContent(pair.Value);
+            field.Headers.ContentType = null;
+            field.Headers.ContentDisposition = new("form-data") { Name = $"\"{pair.Key}\"" };
+            body.Add(field);
+        }
         var file = new ByteArrayContent(photo);
+        file.Headers.ContentDisposition = new("form-data") { Name = "\"file\"", FileName = $"\"{Path.GetFileName(key)}\"" };
         file.Headers.ContentType = MediaTypeHeaderValue.Parse(mime);
-        body.Add(file, "file", Path.GetFileName(key));
+        body.Add(file);
         using var request = new HttpRequestMessage(HttpMethod.Post, destination) { Content = body };
         // OSS gets its signed form only; no login token is attached.
         using var response = await SendAsync(request, "发送照片");
