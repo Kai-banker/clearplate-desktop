@@ -30,7 +30,7 @@ enum PlateError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .message(let s), .preflightWait(let s): return s
-        case .authenticationRequired: return "登录会话已失效，请在微信正常登录光盘打卡，然后点击“从微信自动获取 token”。"
+        case .authenticationRequired: return "登录会话已失效，请在微信正常登录光盘打卡，然后点击“连接微信”。"
         }
     }
 }
@@ -310,6 +310,7 @@ enum PreflightRetry {
     var capture: MacTokenCapture?
     var timer: Timer?
     var legacyConfirmedDay = ""
+    var makeAPI: (SessionConfig) -> PlateAPI = { PlateAPI($0) }
     init() {
         do {
             let c = try LocalStore.load(); group = c.group_id; location = c.location
@@ -453,6 +454,42 @@ enum PreflightRetry {
                     : "会话可用，平台尚未下发新 token。累计成功打卡 \(user.successes) 次。"
                 if let warning = api.tokenSyncWarning { status += " " + warning }
             } catch { handle(error) }
+        }
+    }
+    // A normal reconnect checks the saved session before asking for any capture
+    // privileges. Only explicit authentication expiry (or no token) needs setup.
+    func restoreSavedConnection() async throws -> Bool {
+        let config: SessionConfig
+        do { config = try LocalStore.load() }
+        catch { localSessionBlocked = true; throw error }
+        if localSessionBlocked {
+            group = config.group_id; location = config.location; localSessionBlocked = false
+        }
+        guard !config.token.isEmpty else { return false }
+        let api = makeAPI(config)
+        let user: UserStatus
+        do { user = try await api.user() }
+        catch PlateError.authenticationRequired {
+            needsLogin = true; persist(); return false
+        }
+        account = user.nickname; needsLogin = false; showLoginAlert = false
+        guard persist() else { throw PlateError.message("本地记录保存失败，请检查磁盘和目录权限。") }
+        status = "已连接，保存的登录仍有效，无需重新采集或设置代理和证书。"
+        if let warning = api.tokenSyncWarning { status += " " + warning }
+        return true
+    }
+    func connectWeChat() {
+        guard !busy, !capturing else { return }
+        busy = true; status = "正在检查已保存的登录…"
+        Task {
+            do {
+                let connected = try await restoreSavedConnection()
+                busy = false
+                if !connected { startCapture() }
+            } catch {
+                busy = false
+                status = "未能检查已保存的登录，请稍后重试。" + error.localizedDescription
+            }
         }
     }
     func handle(_ error: Error) {
@@ -617,7 +654,7 @@ struct PlateView: View {
                     Text("每天 08:00 / 12:00 / 18:00 · 北京时间").foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("v1.2.3 试验版").font(.caption).padding(6).background(Color.orange.opacity(0.12)).cornerRadius(6)
+                Text("v1.2.4 试验版").font(.caption).padding(6).background(Color.orange.opacity(0.12)).cornerRadius(6)
             }
             Divider()
             Text(model.account).font(.headline)
@@ -653,14 +690,15 @@ struct PlateView: View {
                     .buttonStyle(.borderedProminent).tint(.green)
                     .help("使用默认照片提交当前所选时段")
                     .disabled(model.busy || model.capturing || model.localSessionBlocked)
-                Button("连接微信") { model.startCapture() }
-                    .help("打开小程序并自动同步本人登录状态")
+                Button("连接微信") { model.connectWeChat() }
+                    .help("先检查已有登录；需要重新登录时才请求采集授权")
                     .disabled(model.busy || model.capturing)
                 Menu("更多") {
                     Button("选择照片打卡…") { model.choosePhoto() }.disabled(model.localSessionBlocked)
                     Button("检查账号状态") { model.check() }
                     Divider()
                     Button("打开光盘小程序") { model.openMiniProgram() }
+                    Button("重新获取微信登录…") { model.startCapture() }
                     Button("手动导入登录凭据…") { model.showTokenImport = true }
                 }.disabled(model.busy || model.capturing)
                 if model.capturing { Button("停止连接") { model.stopCapture() } }
@@ -674,7 +712,7 @@ struct PlateView: View {
         }
         .padding(28).frame(width: 570)
         .alert("登录会话已失效", isPresented: $model.showLoginAlert) {
-            Button("自动获取 token") { model.startCapture() }
+            Button("连接微信") { model.connectWeChat() }
             Button("打开微信") { model.openMiniProgram() }
             Button("稍后处理", role: .cancel) {}
         } message: {

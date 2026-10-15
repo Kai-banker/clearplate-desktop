@@ -4,9 +4,9 @@
 
 ## Mac 版
 
-[v1.2.3 Mac 下载](https://github.com/KiyaKike/clearplate-desktop/releases/tag/v1.2.3)：`ClearPlate-macOS-universal-v1.2.3.zip`，支持 Apple Silicon / Intel，macOS 15+。解压运行 `光盘打卡.app`，点击“连接微信”，在应用内同意临时代理和证书，再正常打开小程序首页或“我的”。候选先核验再保存，无需手工查找复制。首次安装默认关闭计划。
+[v1.2.4 Mac 下载](https://github.com/KiyaKike/clearplate-desktop/releases/tag/v1.2.4)：`ClearPlate-macOS-universal-v1.2.4.zip`，支持 Apple Silicon / Intel，macOS 15+。解压运行 `光盘打卡.app`，点击“连接微信”先检查已有登录；有效时直接连接，不重新设置代理或证书。仅缺失或失效时，在应用内同意临时采集，再正常打开小程序首页或“我的”。候选先核验再保存，无需手工查找复制。首次安装默认关闭计划。
 
-Mac 版同步了临时采集、超时/退出恢复、同账号核验、防重复提交、查询阶段网络重试及上传前 2 小时间隔/剩余次数检查。会话采用 AES-GCM 加密，密钥保存在用户钥匙串；不包含任何人的凭据、位置或本机路径。旧版升级请一起迁移会话和打卡记录。**试验功能，真实 Mac 微信完整采集及 Intel 运行仍待验证**。包使用 ad-hoc 签名，未进行 Apple 公证；完整安装、恢复限制、迁移和构建步骤见 [Mac 使用说明](docs/macOS.md)。
+Mac 版同步了临时采集、超时/退出恢复、同账号核验、防重复提交、查询阶段网络重试及上传前 2 小时间隔/剩余次数检查。会话采用 AES-GCM 加密，密钥保存在用户钥匙串；不包含任何人的凭据、位置或本机路径。旧版升级请一起迁移会话和打卡记录。**试验功能，真实 Mac 微信完整采集已验证成功，Intel 运行仍待实机验证**。包使用 ad-hoc 签名，未进行 Apple 公证；完整安装、恢复限制、迁移和构建步骤见 [Mac 使用说明](docs/macOS.md)。
 
 ## Windows 下载与使用
 

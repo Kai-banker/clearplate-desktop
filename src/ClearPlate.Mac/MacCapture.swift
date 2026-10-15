@@ -31,21 +31,33 @@ enum MacCaptureRecovery {
         if a == nil || b == nil { return a == nil && b == nil }
         return (a as? NSObject)?.isEqual(b) == true
     }
-    final class AuthorizedPreferences {
-        let value: SCPreferences
-        let authorization: AuthorizationRef
-        init() throws {
+    // Reuse the process's authorization context for setup and restoration.
+    // macOS still decides whether its rights are valid or need a fresh prompt.
+    final class NetworkAuthorization {
+        static let shared = NetworkAuthorization()
+        private let lock = NSLock()
+        private var cached: AuthorizationRef?
+        func reference() throws -> AuthorizationRef {
+            lock.lock(); defer { lock.unlock() }
+            if let cached { return cached }
             var reference: AuthorizationRef?
             guard AuthorizationCreate(nil, nil, [], &reference) == errAuthorizationSuccess, let reference else {
                 throw PlateError.message("不能创建网络设置授权。")
             }
+            cached = reference; return reference
+        }
+        deinit { if let cached { AuthorizationFree(cached, []) } }
+    }
+    final class AuthorizedPreferences {
+        let value: SCPreferences
+        let authorization = NetworkAuthorization.shared
+        init() throws {
+            let reference = try authorization.reference()
             guard let prefs = SCPreferencesCreateWithAuthorization(nil, "ClearPlate temporary capture" as CFString, nil, reference) else {
-                AuthorizationFree(reference, [])
                 throw PlateError.message("不能读取网络设置。")
             }
-            authorization = reference; value = prefs
+            value = prefs
         }
-        deinit { AuthorizationFree(authorization, []) }
     }
     static func preferences() throws -> AuthorizedPreferences { try AuthorizedPreferences() }
     static func commit(_ prefs: SCPreferences, path: String, proxies: [String: Any]) throws {

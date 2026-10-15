@@ -2,9 +2,25 @@ import Foundation
 import CryptoKit
 import Security
 
+// Keep a successfully unlocked key only for this process. Failed/cancelled reads
+// are never cached; the next user action can retry the normal Keychain prompt.
+final class SessionKeyCache {
+    private let lock = NSLock()
+    private var cached: SymmetricKey?
+    func get(load: () throws -> SymmetricKey) throws -> SymmetricKey {
+        lock.lock(); defer { lock.unlock() }
+        if let cached { return cached }
+        let key = try load(); cached = key; return key
+    }
+}
+
 enum SessionVault {
     struct Envelope: Codable { let version: Int; let sealed: Data }
+    private static let cache = SessionKeyCache()
     static func key() throws -> SymmetricKey {
+        try cache.get { try readKey() }
+    }
+    private static func readKey() throws -> SymmetricKey {
 #if TESTING
         // Synthetic isolated tests never access the user's keychain.
         return SymmetricKey(data: Data(repeating: 0x11, count: 32))

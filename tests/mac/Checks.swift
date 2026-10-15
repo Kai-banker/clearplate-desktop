@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import CryptoKit
 
 final class MockHTTP: URLProtocol {
     static var mode = "ok", requests = 0
@@ -103,6 +104,15 @@ final class MockHTTP: URLProtocol {
             do { _ = try config.replacingToken(bad); fatalError("invalid accepted") } catch { count += 1 }
         }
         let encoded = try SessionVault.encode(config)
+        let cachedKey = SessionKeyCache(); var reads = 0
+        let firstKey = try cachedKey.get { reads += 1; return SymmetricKey(size: .bits256) }
+        let secondKey = try cachedKey.get { fatalError("cached key was requested twice") }
+        check(reads == 1 && firstKey == secondKey, "one backing key read per process cache")
+        let retryKey = SessionKeyCache()
+        do { _ = try retryKey.get { throw PlateError.message("synthetic cancellation") }; fatalError("cancelled key accepted") } catch { count += 1 }
+        let retriedKey = try retryKey.get { firstKey }
+        check(retriedKey == firstKey, "cancelled key read can be retried")
+        check(try SessionVault.encode(config) != encoded, "cached key still uses fresh AES-GCM nonces")
         check(!String(decoding: encoded, as: UTF8.self).contains("fake-old"), "token ciphertext")
         check(try SessionVault.decode(encoded).token == "fake-old", "vault roundtrip")
         var tampered = try JSONDecoder().decode(SessionVault.Envelope.self, from: encoded).sealed
@@ -136,6 +146,25 @@ final class MockHTTP: URLProtocol {
         catch let error as PlateError { if case .authenticationRequired = error { fatalError("500 marked expired") }; count += 1 }
         check(PreflightRetry.isTransientNetwork(URLError(.notConnectedToInternet)), "offline retry classification")
         check(!PreflightRetry.isTransientNetwork(URLError(.serverCertificateUntrusted)), "TLS never offline retry")
+        try LocalStore.save(config)
+        let connection = PlateModel(); connection.timer?.invalidate()
+        connection.makeAPI = { PlateAPI($0, protocolClasses: [MockHTTP.self]) }
+        connection.needsLogin = true; MockHTTP.mode = "ok"
+        check(try await connection.restoreSavedConnection(), "valid saved session connects without recapture")
+        check(!connection.needsLogin && !connection.capturing && !FileManager.default.fileExists(atPath: MacCaptureRecovery.file.path), "saved connection clears expiry without proxy/certificate setup")
+        for mode in ["expired", "401"] {
+            MockHTTP.mode = mode
+            check(try await !connection.restoreSavedConnection() && connection.needsLogin, "only explicit expiry requests new capture")
+        }
+        for mode in ["offline", "500", "wrong"] {
+            MockHTTP.mode = mode
+            do { _ = try await connection.restoreSavedConnection(); fatalError("failed connection accepted") }
+            catch { count += 1 }
+            check(!connection.capturing, "network/server/wrong-account errors never activate capture")
+        }
+        try LocalStore.save(LocalStore.emptyConfig()); let beforeMissing = MockHTTP.requests
+        check(try await !connection.restoreSavedConnection() && MockHTTP.requests == beforeMissing, "missing token skips account request")
+        MockHTTP.mode = "ok"
         blank.location = "nan,0"; try LocalStore.save(blank)
         let model = PlateModel(); model.timer?.invalidate()
         do { _ = try model.currentConfig(); fatalError("NaN location accepted") } catch { count += 1 }
