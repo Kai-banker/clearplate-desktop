@@ -56,7 +56,10 @@ public sealed class PlateApi(HttpClient http, Func<DateTimeOffset>? clock = null
             try { last = DateTimeOffset.FromUnixTimeSeconds(seconds); }
             catch (ArgumentOutOfRangeException) { throw new BusinessException(0, "最近打卡时间异常，已停止操作。"); }
         }
-        return new(id, Text(data, "nickname"), successes, remaining, Text(data, "token"), last);
+        return new(id, Text(data, "nickname"), successes, remaining, Text(data, "token"), last)
+        {
+            WechatLocation = PlateLocation.Normalize(Text(data, "last_location"))
+        };
     }
     public async Task<string> UploadAsync(string token, byte[] photo, string mime, string extension)
     {
