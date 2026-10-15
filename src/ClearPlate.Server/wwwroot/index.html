@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>光盘打卡 · 服务器</title><link rel="icon" href="/icon.png"><link rel="stylesheet" href="/app.css"><script src="/app.js" defer></script></head>
+<body>
+<header class="topbar"><a class="brand" href="/"><img src="/icon.png" alt="" width="42" height="42"><span>光盘打卡<small>服务器管理</small></span></a><div class="header-end"><span id="server-time">北京时间</span><button id="logout" class="quiet" hidden>退出登录</button></div></header>
+<main>
+  <section id="login-panel" class="login-panel" aria-labelledby="login-title">
+    <p class="eyebrow">欢迎回来</p><h1 id="login-title">让记录按时发生。</h1><p class="muted">登录后管理每天的打卡计划、照片和会话。</p>
+    <form id="login-form"><label for="password">管理密码</label><input id="password" type="password" autocomplete="current-password" required maxlength="256"><button type="submit" class="primary">登录管理页</button><p id="login-error" class="error" role="alert"></p></form>
+    <p class="small muted">首次部署的密码保存在服务器的<br><code>.secrets/admin_password</code> 文件中。</p>
+  </section>
+  <section id="dashboard" hidden>
+    <div class="page-title"><div><p class="eyebrow" id="day">今日计划</p><h1>三餐有序，记录有据。</h1><p class="muted" id="account">尚未连接账号</p></div><a class="text-link" href="#session-section">会话与设置</a></div>
+    <div id="notice" class="notice" role="status">正在读取状态…</div>
+    <div class="workspace">
+      <section class="plan" aria-labelledby="plan-title"><div class="section-title"><h2 id="plan-title">今日打卡</h2><span class="small muted">每天三个时段 · 北京时间</span></div><div id="slots" class="slots"></div><p class="footnote">每个时段开始后的 5 分钟内自动检查。错过窗口不自动补交；手动重试仍检查平台次数及两小时间隔。</p>
+        <section class="photo-section" aria-labelledby="photo-title"><div class="section-title"><h2 id="photo-title">打卡照片</h2><label class="button quiet" for="photo-file">更换照片</label><input id="photo-file" type="file" accept="image/png,image/jpeg" class="file-input"></div><div class="photo-row"><img id="photo" alt="当前打卡照片" width="128" height="128"><div><p id="photo-name">内置默认照片</p><p class="small muted">计划使用当前照片。请使用当天真实的光盘照片，最终结果由平台正常校验。</p><p class="small muted">PNG / JPG，1 KB 至 20 MB</p></div></div></section>
+      </section>
+      <aside>
+        <section class="settings-section" aria-labelledby="settings-title"><h2 id="settings-title">自动计划</h2><form id="settings-form"><label class="toggle-row" for="schedule"><span>每天自动打卡<small>08:00 / 12:00 / 18:00</small></span><input id="schedule" type="checkbox"></label><label for="group">组织 ID <span class="muted small">可留空</span></label><input id="group" inputmode="numeric" maxlength="32" placeholder="与本人原请求一致"><label for="location">打卡位置</label><input id="location" maxlength="128" placeholder="真实纬度,经度"><p class="small muted">位置由你填写，不会自动推测。</p><button type="submit" class="primary full">保存设置</button></form></section>
+        <section id="session-section" class="settings-section" aria-labelledby="session-title"><div class="section-title"><h2 id="session-title">登录会话</h2><button id="check" class="quiet">检查登录</button></div><p id="session-status" class="small muted">尚未配置</p><form id="session-form"><label for="token">更新本人 token</label><input id="token" type="password" autocomplete="off" spellcheck="false" maxlength="4096" required placeholder="输入完整的 X-Token"><button type="submit" class="secondary full">核验并更新</button></form><p class="small muted">需从已正常登录微信的设备取得。服务器可沿用有效登录，无法代替微信重新登录或独立延长有效期。</p></section>
+      </aside>
+    </div>
+    <footer>单账号服务 · 会话加密保存 · 上传后结果不明时保留防重复记录</footer>
+  </section>
+</main>
+<dialog id="confirm-dialog"><form id="confirm-form"><p class="eyebrow">确认本人账号</p><h2>更新登录前，再核对一次。</h2><p>平台返回账号：<strong id="candidate-name"></strong></p><label class="confirm-label"><input id="accepted" type="checkbox" required>我确认这是本人账号</label><p class="small muted">只有核验为原绑定账号的会话才会替换现有登录。</p><div class="dialog-actions"><button id="cancel-confirm" type="button" class="quiet">取消</button><button type="submit" class="primary">确认并保存</button></div><p id="confirm-error" class="error" role="alert"></p></form></dialog>
+<output id="toast" role="status" hidden></output>
+</body></html>

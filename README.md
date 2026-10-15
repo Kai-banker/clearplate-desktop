@@ -1,6 +1,14 @@
-# 光盘打卡 · Windows / macOS
+# 光盘打卡 · Windows / macOS / Linux Docker
 
 使用本人已授权会话的桌面工具，MIT 开源。Windows 采用 C# / .NET 10 / Windows Forms；Mac 采用 SwiftUI，采集协议与 TLS 组件复用 C# 实现。
+
+## Linux / Docker 服务器版
+
+[v1.3.0 部署包](https://github.com/KiyaKike/clearplate-desktop/releases/tag/v1.3.0) 提供单账号网页管理、照片上传、每日 08:00 / 12:00 / 18:00 调度、同账号核验、加密持久化和防重复记录。初次安装默认关闭计划，默认仅绑定 `127.0.0.1:8787`，通过 SSH 隧道或已有 HTTPS 反代管理。
+
+解压部署包后，进入 `deploy/server`，运行 `sh init.sh` 和 `docker compose up -d --build`。密码及数据加密密钥由初始化脚本随机生成，通过 Docker secrets 文件提供。服务器可沿用有效 token；过期后仍需从正常登录微信的设备更新，不能独立重新登录。启用服务器计划前关闭同账号桌面计划；不同设备不共享本地打卡记录。
+
+完整初始化、配置、备份、升级及验证范围见 [服务器部署说明](docs/server.md)。当前开发环境无 Docker Engine，已验证本机 HTTP 服务、模拟平台和浏览器界面，Linux Docker 构建及容器运行尚待验证。
 
 ## Mac 版
 
