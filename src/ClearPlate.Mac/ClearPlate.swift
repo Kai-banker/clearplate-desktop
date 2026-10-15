@@ -654,7 +654,8 @@ struct PlateView: View {
                     Text("每天 08:00 / 12:00 / 18:00 · 北京时间").foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("v1.2.4 试验版").font(.caption).padding(6).background(Color.orange.opacity(0.12)).cornerRadius(6)
+                Text("v\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.2") 试验版")
+                    .font(.caption).padding(6).background(Color.orange.opacity(0.12)).cornerRadius(6)
             }
             Divider()
             Text(model.account).font(.headline)

@@ -4,6 +4,8 @@ cd "$(dirname "$0")/.."
 task_dotnet="${DOTNET:-dotnet}"
 task_feed="${NUGET_SOURCE:-https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-public/nuget/v3/index.json}"
 mkdir -p artifacts/macOS
+swift scripts/create-mac-icon.swift artifacts/ClearPlate.iconset
+iconutil -c icns artifacts/ClearPlate.iconset -o artifacts/ClearPlate.icns
 for task_arch in arm64 x64; do
     "$task_dotnet" publish src/ClearPlate.MacCapture/ClearPlate.MacCapture.csproj -c Release -r "osx-$task_arch" --self-contained true --source "$task_feed" -o "artifacts/mac-$task_arch-helper"
 done
@@ -14,6 +16,7 @@ task_app='artifacts/macOS/光盘打卡.app'
 mkdir -p "$task_app/Contents/MacOS" "$task_app/Contents/Resources"
 lipo -create artifacts/macOS/ui-arm64 artifacts/macOS/ui-x86_64 -output "$task_app/Contents/MacOS/ClearPlate"
 cp src/ClearPlate.Mac/Info.plist "$task_app/Contents/Info.plist"
+cp artifacts/ClearPlate.icns "$task_app/Contents/Resources/ClearPlate.icns"
 cp src/ClearPlate.Mac/plate.png "$task_app/Contents/Resources/光盘.png"
 for task_arch in arm64 x64; do
     cp "artifacts/mac-$task_arch-helper/ClearPlate.MacCapture" "$task_app/Contents/Resources/ClearPlate.MacCapture-$task_arch"
