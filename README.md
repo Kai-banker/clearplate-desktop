@@ -2,6 +2,16 @@
 
 使用本人已授权会话的桌面工具，MIT 开源。Windows 采用 C# / .NET 10 / Windows Forms；Mac 采用 SwiftUI，采集协议与 TLS 组件复用 C# 实现。
 
+## 直接下载
+
+各平台分别发布，最新的服务器发布不包含桌面安装包。
+
+| 平台 | 下载 |
+| --- | --- |
+| Windows x64 · v1.2.6 | [下载 ZIP，解压运行 ClearPlate.exe](https://github.com/KiyaKike/clearplate-desktop/releases/download/v1.2.6/ClearPlate-Windows-x64-v1.2.6.zip) |
+| macOS · v1.2.4 | [下载通用 ZIP](https://github.com/KiyaKike/clearplate-desktop/releases/download/v1.2.4/ClearPlate-macOS-universal-v1.2.4.zip) |
+| Linux Docker · v1.3.0 | [下载源码部署包](https://github.com/KiyaKike/clearplate-desktop/releases/download/v1.3.0/ClearPlate-Server-Docker-v1.3.0.tar.gz) |
+
 ## Linux / Docker 服务器版
 
 [v1.3.0 部署包](https://github.com/KiyaKike/clearplate-desktop/releases/tag/v1.3.0) 提供单账号网页管理、照片上传、每日 08:00 / 12:00 / 18:00 调度、同账号核验、加密持久化和防重复记录。初次安装默认关闭计划，默认仅绑定 `127.0.0.1:8787`，通过 SSH 隧道或已有 HTTPS 反代管理。
