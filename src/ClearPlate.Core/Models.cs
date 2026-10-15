@@ -7,7 +7,7 @@ public sealed record UserProfile(string AccountId, string Nickname, int Successe
     string IssuedToken, DateTimeOffset? LastCheckIn);
 public sealed class AppState
 {
-    public bool ScheduleEnabled { get; set; } = true;
+    public bool ScheduleEnabled { get; set; }
     public bool NeedsLogin { get; set; }
     public string GroupId { get; set; } = "";
     public string Location { get; set; } = "";
@@ -15,8 +15,21 @@ public sealed class AppState
     public HashSet<string> Confirmed { get; set; } = [];
     public Dictionary<string, SlotRecord> Records { get; set; } = [];
 }
-public sealed record SlotRecord(string StartedAt, string UpdatedAt, string Stage, string Outcome, string Message);
-public sealed class LoginRequiredException() : Exception("登录已失效，请在微信正常登录后导入本人新 token。");
+public sealed record SlotRecord(string StartedAt, string UpdatedAt, string Stage, string Outcome, string Message)
+{
+    // Null preserves compatibility with schema-1 records written by old versions.
+    public bool? UploadStarted { get; init; }
+    public bool? SubmissionStarted { get; init; }
+    public string RetryPolicy { get; init; } = "";
+}
+public enum ConnectionResult { Connected, NeedsCapture, Failed }
+public static class PreUploadRecovery
+{
+    public static bool CanRelease(SlotRecord record) => record.UploadStarted is not true && record.SubmissionStarted is not true
+        && record.Stage is ("准备照片" or "查询账号")
+        && record.Outcome is ("未成功" or "未提交" or "等待网络" or "等待间隔" or "等待条件" or "等待本机会话");
+}
+public sealed class LoginRequiredException() : Exception("登录已失效，请在微信正常登录后点击“连接微信”。");
 public sealed class BusinessException(int code, string message) : Exception(message)
 {
     public int Code { get; } = code;

@@ -28,15 +28,13 @@ jobs:
       - name: Package portable app
         shell: pwsh
         run: |
-          Copy-Item README.md artifacts/win-x64/README.md
-          Copy-Item LICENSE artifacts/win-x64/LICENSE.txt
-          Compress-Archive -Path artifacts/win-x64/* -DestinationPath artifacts/ClearPlate-Windows-x64-v1.1.0.zip
-          $hash = (Get-FileHash artifacts/ClearPlate-Windows-x64-v1.1.0.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  ClearPlate-Windows-x64-v1.1.0.zip" | Set-Content artifacts/SHA256SUMS.txt
+          python scripts/package-windows.py artifacts/ClearPlate-Windows-x64-v1.2.6.zip
+          $hash = (Get-FileHash artifacts/ClearPlate-Windows-x64-v1.2.6.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  ClearPlate-Windows-x64-v1.2.6.zip" | Set-Content artifacts/SHA256SUMS.txt
       - uses: actions/upload-artifact@v7
         with:
           name: ClearPlate-Windows-x64
           path: |
-            artifacts/ClearPlate-Windows-x64-v1.1.0.zip
+            artifacts/ClearPlate-Windows-x64-v1.2.6.zip
             artifacts/SHA256SUMS.txt
           retention-days: 14

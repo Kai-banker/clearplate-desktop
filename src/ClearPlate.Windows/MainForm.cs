@@ -8,7 +8,6 @@ public sealed class MainForm : Form
     private readonly PlateEngine engine;
     private readonly TextBox group = new() { Width = 200 };
     private readonly TextBox location = new() { Width = 390, PlaceholderText = "当天真实纬度,经度" };
-    private readonly TextBox token = new() { Width = 410, UseSystemPasswordChar = true, PlaceholderText = "本人完整 X-Token" };
     private readonly CheckBox schedule = new() { AutoSize = true, Text = "每天 08:00 / 12:00 / 18:00 自动用内置照片打卡" };
     private readonly ComboBox slot = new() { Width = 120, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Label account = new() { AutoSize = true };
@@ -17,20 +16,25 @@ public sealed class MainForm : Form
     private readonly TextBox status = new() { ReadOnly = true, Multiline = true, Width = 640, Height = 80, ScrollBars = ScrollBars.Vertical };
     private readonly List<Button> actionButtons = [];
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 15000 };
-    private readonly NotifyIcon tray = new() { Icon = SystemIcons.Application, Text = "光盘打卡工具" };
+    private readonly NotifyIcon tray = new() { Text = "光盘打卡工具" };
+    private readonly ContextMenuStrip moreMenu = new();
+    private readonly Icon appIcon;
     private readonly Image preview;
     private WechatTokenCapture? capture;
     private readonly System.Windows.Forms.Timer captureTimer = new() { Interval = 180000 };
-    private readonly Button stopCapture = new() { Text = "停止采集并恢复设置", AutoSize = true, Enabled = false };
+    private readonly Button stopCapture = new() { Text = "停止连接并恢复设置", AutoSize = true, Visible = false, Enabled = false };
     private bool importingCapture;
     public MainForm(WindowsStore store, HttpClient client, bool startTimer = true)
     {
         var saved = store.Load();
         engine = new(new PlateApi(client), saved.State, saved.Session, store.Save);
-        Text = "光盘打卡 · Windows x64 · v1.1.0 自动同步试验版";
+        Text = $"光盘打卡 · Windows x64 · v{typeof(MainForm).Assembly.GetName().Version?.ToString(3)} 试验版";
+        using (var stream = typeof(MainForm).Assembly.GetManifestResourceStream("ClearPlate.icon.ico") ?? throw new IOException("应用图标缺失。"))
+        using (var originalIcon = new Icon(stream)) appIcon = (Icon)originalIcon.Clone();
+        Icon = appIcon; tray.Icon = appIcon;
         Font = new Font("Microsoft YaHei UI", 10);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(710, 860);
+        ClientSize = new Size(710, 760);
         MinimumSize = new Size(720, 520);
         StartPosition = FormStartPosition.CenterScreen;
         var content = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown,
@@ -53,11 +57,20 @@ public sealed class MainForm : Form
         slot.SelectedItem = Schedule.Suggested(DateTimeOffset.UtcNow);
         content.Controls.Add(Row(new Label { Text = "手动打卡时段", Width = 120, AutoSize = false }, slot));
         content.Controls.Add(record);
-        content.Controls.Add(Row(ActionButton("检查并同步 token", async () => { SaveSettings(); await engine.CheckAsync(); }),
-            ActionButton("用内置照片打卡", async () => { SaveSettings(); await engine.SubmitAsync(SelectedSlot, DefaultPhoto); }),
-            ActionButton("选择其他照片", SelectPhotoAsync)));
-        content.Controls.Add(Note("获取本人会话：点自动获取，再正常打开微信小程序；无需自己查找或复制 token。"));
-        content.Controls.Add(Row(ActionButton("从微信自动获取 token", StartCaptureAsync), stopCapture));
+        moreMenu.Items.Add(MenuAction("选择照片打卡…", SelectPhotoAsync));
+        moreMenu.Items.Add(MenuAction("检查账号状态", async () => { SaveSettings(); await engine.CheckAsync(); }));
+        moreMenu.Items.Add(new ToolStripSeparator());
+        moreMenu.Items.Add(MenuAction("打开光盘小程序", () => { OpenMiniProgram(); return Task.CompletedTask; }));
+        moreMenu.Items.Add(MenuAction("重新获取微信登录…", StartCaptureAsync));
+        moreMenu.Items.Add(MenuAction("手动导入登录凭据…", ShowTokenImportAsync));
+        var more = ActionButton("更多", () => Task.CompletedTask);
+        more.Click += (_, _) => moreMenu.Show(more, new Point(0, more.Height));
+        var actions = Row(ActionButton("立即打卡", async () => { SaveSettings(); await engine.SubmitAsync(SelectedSlot, DefaultPhoto); }),
+            ActionButton("连接微信", ConnectWeChatAsync), more);
+        actions.Name = "PrimaryActions";
+        content.Controls.Add(actions);
+        content.Controls.Add(stopCapture);
+        content.Controls.Add(Note("连接微信会先检查已有登录；有效时直接复用，需要重新登录时才请求采集授权。"));
         stopCapture.Click += (_, _) => {
             try { StopCapture(); status.Text = "采集已停止，临时证书已移除；代理已恢复或保留你采集期间的新设置。"; }
             catch (Exception error) { status.Text = error.Message; }
@@ -66,17 +79,8 @@ public sealed class MainForm : Form
             try { StopCapture(); status.Text = "3 分钟内未捕获 token，已恢复代理并移除临时证书。可能是微信未使用系统代理或未接受证书；这不表示账号没有 token。"; }
             catch (Exception error) { status.Text = error.Message; }
         };
-        content.Controls.Add(Note("手动粘贴（备用）；token 用当前 Windows 用户的 DPAPI 加密保存"));
-        content.Controls.Add(Row(token, ActionButton("核验并保存", async () => {
-            SaveSettings();
-            if (await engine.ImportAsync(token.Text, ApproveAccount)) token.Clear();
-        })));
-        content.Controls.Add(Row(ActionButton("打开微信小程序", () => {
-            OpenMiniProgram();
-            return Task.CompletedTask;
-        })));
         content.Controls.Add(status);
-        content.Controls.Add(Note("查询账号阶段断网可在原 5 分钟窗口内重试；开始上传后不会自动重复提交。\r\n登录过期暂停，请正常登录微信后点“从微信自动获取 token”；目前没有独立续期机制。"));
+        content.Controls.Add(Note("上传前失败可手动重试，查询时断网可在原窗口内自动重试；上传后结果不明不重复提交。\r\n登录过期暂停，请正常登录微信后点“连接微信”；目前没有独立续期机制。"));
         schedule.Checked = engine.State.ScheduleEnabled;
         schedule.CheckedChanged += (_, _) => { engine.State.ScheduleEnabled = schedule.Checked; SaveSettings(); };
         slot.SelectedIndexChanged += (_, _) => UpdateUi();
@@ -106,6 +110,38 @@ public sealed class MainForm : Form
         $"平台返回账号：{user.Nickname}\r\n用户 ID：{user.AccountId}\r\n确认这是本人账号并绑定？", "绑定本人账号",
         MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
     private static void OpenMiniProgram() => Process.Start(new ProcessStartInfo("weixin://dl/business/?appid=wx6a4976bd627fc4ca&path=pages/index/dataHomePage") { UseShellExecute = true });
+    private async Task ConnectWeChatAsync()
+    {
+        SaveSettings();
+        if (await engine.ConnectAsync() == ConnectionResult.NeedsCapture) await StartCaptureAsync();
+    }
+    private Task ShowTokenImportAsync()
+    {
+        using var dialog = new Form { Text = "手动导入登录凭据", ClientSize = new Size(520, 245),
+            StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false, MinimizeBox = false, Font = Font, Icon = appIcon };
+        using var input = new TextBox { UseSystemPasswordChar = true, Width = 460, PlaceholderText = "本人完整 X-Token" };
+        using var note = new Label { AutoSize = true, MaximumSize = new Size(460, 0), Text = "备用方式：核验原账号一致后保存，凭据由当前 Windows 用户的 DPAPI 加密。" };
+        using var result = new Label { AutoSize = true, MaximumSize = new Size(460, 0) };
+        using var confirm = new Button { Text = "核验并保存", AutoSize = true };
+        using var cancel = new Button { Text = "取消", AutoSize = true, DialogResult = DialogResult.Cancel };
+        using var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(20) };
+        layout.Controls.AddRange([note, input, Row(confirm, cancel), result]); dialog.Controls.Add(layout);
+        confirm.Click += async (_, _) => {
+            input.Enabled = confirm.Enabled = cancel.Enabled = false;
+            try
+            {
+                SaveSettings();
+                if (await engine.ImportAsync(input.Text, ApproveAccount)) { input.Clear(); dialog.Close(); }
+                else result.Text = engine.Status;
+            }
+            catch (Exception error) { result.Text = error.Message; }
+            finally { if (!dialog.IsDisposed) input.Enabled = confirm.Enabled = cancel.Enabled = true; }
+        };
+        dialog.FormClosing += (_, e) => { if (engine.Busy) e.Cancel = true; };
+        dialog.AcceptButton = confirm; dialog.CancelButton = cancel;
+        dialog.ShowDialog(this); return Task.CompletedTask;
+    }
     private Task StartCaptureAsync()
     {
         if (capture is not null || engine.Busy) return Task.CompletedTask;
@@ -116,6 +152,9 @@ public sealed class MainForm : Form
             "Windows 微信可能不使用系统代理或拒绝此证书，此功能不保证在所有版本上可用。仍需你正常登录微信，不能绕过登录或独立续期。\r\n\r\n是否同意现在启用临时代理和证书？",
             "同意后才自动获取 token", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
         if (consent != DialogResult.Yes) { status.Text = "未启用代理或证书，可以继续使用手动导入。"; return Task.CompletedTask; }
+        // A timer may have started a request while the modal consent was open.
+        // Never switch networking underneath an active upload/check-in.
+        if (engine.Busy || capture is not null || importingCapture) { status.Text = "正在执行请求，请等待结束后再连接微信。"; return Task.CompletedTask; }
         try
         {
             SaveSettings();
@@ -134,7 +173,7 @@ public sealed class MainForm : Form
                         using var checkClient = Program.CreateClient();
                         var profile = await new PlateApi(checkClient).UserAsync(candidate);
                         if (engine.Session is not null && profile.AccountId != engine.Session.AccountId) throw new IOException("捕获的是其他账号，原会话已保留。");
-                        if (await engine.ImportAsync(candidate, ApproveAccount)) { token.Clear(); status.Text = engine.Status + " 已从微信自动同步，无需复制粘贴。"; }
+                        if (await engine.ImportAsync(candidate, ApproveAccount)) { status.Text = engine.Status + " 已从微信自动同步，无需复制粘贴。"; }
                         else status.Text = engine.Status;
                     }
                     catch (Exception error) { status.Text = "自动同步未完成：" + error.Message; }
@@ -174,6 +213,15 @@ public sealed class MainForm : Form
         };
         actionButtons.Add(button); return button;
     }
+    private ToolStripMenuItem MenuAction(string caption, Func<Task> action)
+    {
+        var item = new ToolStripMenuItem(caption);
+        item.Click += async (_, _) => {
+            try { await action(); }
+            catch (Exception error) { status.Text = "操作已停止：" + error.Message; }
+        };
+        return item;
+    }
     private void SaveSettings()
     {
         engine.State.GroupId = group.Text.Trim(); engine.State.Location = location.Text.Trim(); engine.Persist();
@@ -204,17 +252,19 @@ public sealed class MainForm : Form
         status.Text = engine.Status; record.Text = engine.SlotText(SelectedSlot);
         overview.Text = string.Join(" · ", Schedule.Slots.Select(s => {
             var key = Schedule.Key(s, DateTimeOffset.UtcNow);
-            return s + " " + (engine.State.Confirmed.Contains(key) ? "成功" : engine.State.Records.GetValueOrDefault(key)?.Outcome ?? "待执行");
+            var detail = engine.State.Records.GetValueOrDefault(key);
+            return s + " " + (engine.State.Confirmed.Contains(key) ? "成功" : !engine.State.Attempted.Contains(key) && detail?.RetryPolicy == "manual"
+                ? "未提交（可手动重试）" : detail?.Outcome ?? "待执行");
         }));
         var ready = !engine.Busy && capture is null && !importingCapture;
         foreach (var button in actionButtons) button.Enabled = ready;
-        group.Enabled = location.Enabled = slot.Enabled = token.Enabled = schedule.Enabled = ready;
-        stopCapture.Enabled = capture is not null;
+        group.Enabled = location.Enabled = slot.Enabled = schedule.Enabled = ready;
+        stopCapture.Visible = stopCapture.Enabled = capture is not null;
     }
     private void RestoreWindow() { Show(); WindowState = FormWindowState.Normal; Activate(); tray.Visible = false; }
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { capture?.Dispose(); captureTimer.Dispose(); timer.Dispose(); tray.Dispose(); preview.Dispose(); }
+        if (disposing) { capture?.Dispose(); captureTimer.Dispose(); timer.Dispose(); tray.Dispose(); moreMenu.Dispose(); preview.Dispose(); appIcon.Dispose(); }
         base.Dispose(disposing);
     }
 }

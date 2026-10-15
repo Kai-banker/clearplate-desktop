@@ -5,7 +5,8 @@
     <UseWindowsForms>true</UseWindowsForms>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <AssemblyName>ClearPlate</AssemblyName>
-    <Version>1.1.0</Version>
+    <Version>1.2.6</Version>
+    <ApplicationIcon>Assets/ClearPlate.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
@@ -16,5 +17,6 @@
     <ProjectReference Include="../ClearPlate.Core/ClearPlate.Core.csproj" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
     <EmbeddedResource Include="Assets/plate.png" LogicalName="ClearPlate.plate.png" />
+    <EmbeddedResource Include="Assets/ClearPlate.ico" LogicalName="ClearPlate.icon.ico" />
   </ItemGroup>
 </Project>

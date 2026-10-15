@@ -78,7 +78,7 @@ Check(engine.State.Confirmed.Count == 1, "exactly two hours allowed");
 
 handler = new(() => now) { Remaining = 0 }; engine = Engine(handler);
 await engine.SubmitAsync("18:00", Photo);
-Check(handler.Uploads == 0 && handler.Punches == 0, "daily quota checked before upload");
+Check(handler.Uploads == 0 && handler.Punches == 0 && engine.State.Attempted.Count == 0, "daily quota checked before upload without consuming slot");
 
 handler = new(() => now) { Mode = "expired" }; engine = Engine(handler);
 await engine.TickAsync(Photo); calls = handler.Calls; await engine.TickAsync(Photo);
@@ -106,7 +106,9 @@ Check(!await engine.ImportAsync("fake-new", _ => true) && engine.Session!.Token 
 
 handler = new(() => now) { Mode = "tls-error" }; engine = Engine(handler);
 await engine.SubmitAsync("18:00", Photo);
-Check(engine.State.Attempted.Count == 1 && engine.State.Records[Schedule.Key("18:00", now)].Outcome != "等待网络", "TLS error is not retried as offline");
+Check(engine.State.Attempted.Count == 0 && engine.State.Records[Schedule.Key("18:00", now)].RetryPolicy == "manual", "pre-upload TLS error permits only explicit manual retry");
+calls = handler.Calls; await engine.TickAsync(Photo);
+Check(handler.Calls == calls, "TLS failure is never automatically retried as offline");
 
 handler = new(() => now) { Mode = "401" }; engine = Engine(handler);
 await engine.CheckAsync(); Check(engine.State.NeedsLogin, "HTTP 401 requires login");
@@ -115,6 +117,86 @@ await engine.CheckAsync(); Check(!engine.State.NeedsLogin, "HTTP 500 is not call
 handler = new(() => now); engine = Engine(handler, new() { Location = "NaN,0" });
 await engine.SubmitAsync("18:00", Photo);
 Check(handler.Calls == 0 && engine.State.Attempted.Count == 0, "invalid location never consumes slot or sends request");
+
+Check(!new AppState().ScheduleEnabled, "fresh installation requires explicitly enabling schedule");
+handler = new(() => now); engine = Engine(handler);
+await engine.SubmitAsync("18:00", () => throw new IOException("fake photo read failure"));
+var retryKey = Schedule.Key("18:00", now);
+Check(handler.Calls == 0 && engine.State.Attempted.Count == 0 && engine.State.Records[retryKey].RetryPolicy == "manual", "photo failure preserves manual retry without requests");
+Check(engine.SlotText("18:00").Contains("手动重试"), "record explains safe manual retry");
+await engine.TickAsync(Photo);
+Check(handler.Calls == 0, "manual-only preparation failure never automatically backfills");
+persisted = JsonSerializer.Deserialize<AppState>(JsonSerializer.Serialize(engine.State))!;
+engine = Engine(handler, persisted); await engine.TickAsync(Photo);
+Check(handler.Calls == 0, "manual retry policy survives serialization and restart");
+await engine.SubmitAsync("18:00", Photo);
+Check(handler.Punches == 1 && engine.State.Confirmed.Contains(retryKey), "explicit retry after photo failure submits exactly once");
+
+handler = new(() => now) { Mode = "500" }; engine = Engine(handler);
+await engine.SubmitAsync("18:00", Photo); calls = handler.Calls;
+await engine.TickAsync(Photo);
+Check(engine.State.Attempted.Count == 0 && handler.Calls == calls && engine.State.Records[retryKey].RetryPolicy == "manual", "pre-upload server error does not consume slot or start automatic loop");
+handler.Mode = "ok"; await engine.SubmitAsync("18:00", Photo);
+Check(handler.Punches == 1, "server recovery permits explicit manual retry");
+
+var legacyRecord = JsonSerializer.Deserialize<SlotRecord>("""
+    {"StartedAt":"original-start","UpdatedAt":"original-time","Stage":"准备照片","Outcome":"未成功","Message":"fake legacy failure"}
+    """)!;
+Check(legacyRecord.UploadStarted is null && legacyRecord.RetryPolicy == "", "old schema loads without new retry fields");
+Check(PreUploadRecovery.CanRelease(legacyRecord), "terminal legacy preparation failure is proven unsubmitted");
+Check(PreUploadRecovery.CanRelease(legacyRecord with { Stage = "查询账号" }), "terminal account failure precedes every upload");
+foreach (var unsafeRecord in new[] { legacyRecord with { Outcome = "执行中" }, legacyRecord with { Stage = "上传照片" },
+    legacyRecord with { Stage = "提交打卡", Outcome = "结果未确认" }, legacyRecord with { UploadStarted = true }, legacyRecord with { SubmissionStarted = true } })
+    Check(!PreUploadRecovery.CanRelease(unsafeRecord), "in-flight/uploaded/uncertain records remain protected");
+var confirmedKey = Schedule.Key("08:00", now); var unknownKey = Schedule.Key("12:00", now);
+var uploadedKey = Schedule.Key("18:00", now.AddDays(-1));
+var legacyState = Fresh(); legacyState.Attempted.UnionWith([retryKey, confirmedKey, unknownKey, uploadedKey]);
+legacyState.Confirmed.Add(confirmedKey);
+legacyState.Records[retryKey] = legacyRecord; legacyState.Records[confirmedKey] = legacyRecord;
+legacyState.Records[uploadedKey] = legacyRecord with { Stage = "上传照片" };
+AppState? savedRecovery = null; var recoveryWrites = 0;
+handler = new(() => now);
+engine = Engine(handler, legacyState, persist: (_, state) => { savedRecovery = JsonSerializer.Deserialize<AppState>(JsonSerializer.Serialize(state)); recoveryWrites++; });
+Check(!engine.State.Attempted.Contains(retryKey) && savedRecovery?.Records[retryKey].RetryPolicy == "manual", "startup persistently releases proven legacy pre-upload failure");
+Check(engine.State.Confirmed.Contains(confirmedKey) && engine.State.Attempted.IsSupersetOf([confirmedKey, unknownKey, uploadedKey]), "confirmed, unknown and uploaded guards survive migration");
+Check(engine.State.Records[retryKey].Message == legacyRecord.Message && engine.State.Records[retryKey].UpdatedAt == legacyRecord.UpdatedAt, "migration preserves original failure and timestamp");
+engine.RecoverUnsubmittedAttempts();
+Check(recoveryWrites == 1 && handler.Calls == 0, "migration is idempotent and sends no requests");
+await engine.TickAsync(Photo);
+Check(handler.Calls == 0 && engine.SlotText("18:00").Contains("手动重试"), "legacy recovery never automatically submits missed slot");
+var diskRecovery = Fresh(); diskRecovery.Attempted.Add(retryKey); diskRecovery.Records[retryKey] = legacyRecord;
+try { _ = Engine(handler, diskRecovery, persist: (_, _) => throw new IOException("fake disk failure")); throw new Exception("startup continued without persisted recovery"); }
+catch (IOException) { checks++; }
+
+handler = new(() => now); engine = Engine(handler, persist: (_, _) => throw new IOException("fake disk failure"));
+try { await engine.SubmitAsync("18:00", Photo); throw new Exception("submission continued without persisted record"); }
+catch (IOException) { checks++; }
+Check(handler.Calls == 0 && !engine.Busy, "failed local record prevents all requests and releases busy state");
+handler = new(() => now); AppState? beforeBoundary = null;
+engine = Engine(handler, persist: (_, state) => {
+    if (state.Records.GetValueOrDefault(retryKey)?.Stage == "上传照片") throw new IOException("fake boundary write failure");
+    beforeBoundary = JsonSerializer.Deserialize<AppState>(JsonSerializer.Serialize(state));
+});
+try { await engine.SubmitAsync("18:00", Photo); throw new Exception("upload began without durable guard"); }
+catch (IOException) { checks++; }
+Check(handler.Calls == 1 && handler.Uploads == 0 && handler.Punches == 0, "network upload boundary is persisted before upload API request");
+engine = Engine(handler, beforeBoundary);
+Check(engine.State.Attempted.Contains(retryKey), "interrupted in-flight record remains protected on restart");
+
+handler = new(() => now); engine = Engine(handler);
+Check(await engine.ConnectAsync() == ConnectionResult.Connected && handler.Calls == 1, "valid saved login connects without capture");
+Check(await engine.ConnectAsync() == ConnectionResult.Connected && handler.Calls == 2 && handler.Uploads == 0 && handler.Punches == 0, "repeated connect is read-only");
+foreach (var mode in new[] { "expired", "401" }) {
+    handler = new(() => now) { Mode = mode }; engine = Engine(handler);
+    Check(await engine.ConnectAsync() == ConnectionResult.NeedsCapture && engine.State.NeedsLogin, "only explicit login expiry requests capture");
+}
+foreach (var mode in new[] { "offline", "500", "tls-error", "other-account" }) {
+    handler = new(() => now) { Mode = mode }; engine = Engine(handler);
+    Check(await engine.ConnectAsync() == ConnectionResult.Failed && !engine.State.NeedsLogin, "network/server/wrong-account errors never request capture");
+}
+handler = new(() => now);
+engine = new(new PlateApi(new HttpClient(handler)), Fresh(), null, (_, _) => { }, () => now);
+Check(await engine.ConnectAsync() == ConnectionResult.NeedsCapture && handler.Calls == 0, "missing login requests capture without sending blank credentials");
 
 var captureChecks = await CaptureChecks.RunAsync();
 Console.WriteLine($"PASS: {checks} business checks + {captureChecks} capture protocol / isolated local TLS checks; no live requests, no system trust or proxy changes.");

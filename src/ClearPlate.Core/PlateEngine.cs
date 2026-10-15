@@ -2,24 +2,53 @@ using System.Globalization;
 
 namespace ClearPlate.Core;
 
-public sealed class PlateEngine(PlateApi api, AppState state, Session? session, Action<Session?, AppState> save,
-    Func<DateTimeOffset>? clock = null)
+public sealed class PlateEngine
 {
-    private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
-    public AppState State { get; } = state;
-    public Session? Session { get; private set; } = session;
+    private readonly PlateApi api;
+    private readonly Action<Session?, AppState> save;
+    private readonly Func<DateTimeOffset> now;
+    public AppState State { get; }
+    public Session? Session { get; private set; }
+    public PlateEngine(PlateApi api, AppState state, Session? session, Action<Session?, AppState> save, Func<DateTimeOffset>? clock = null)
+    {
+        this.api = api; this.save = save; now = clock ?? (() => DateTimeOffset.UtcNow);
+        State = state; Session = session;
+        State.Attempted.UnionWith(State.Confirmed);
+        RecoverUnsubmittedAttempts();
+    }
     public bool Busy { get; private set; }
-    public string Status { get; private set; } = "首次使用请导入本人 token，并填写组织及真实位置。";
+    public string Status { get; private set; } = "首次使用点击“连接微信”获取本人登录，并填写组织及真实位置。";
     public event Action? Changed;
     public void Persist() { save(Session, State); Changed?.Invoke(); }
     private void Message(string value) { Status = value; Changed?.Invoke(); }
-    private void Record(string key, string stage, string outcome, string message)
+    public void RecoverUnsubmittedAttempts()
+    {
+        var released = State.Attempted.Where(key => !State.Confirmed.Contains(key)
+            && State.Records.TryGetValue(key, out var record) && PreUploadRecovery.CanRelease(record)).ToArray();
+        if (released.Length == 0) return;
+        foreach (var key in released)
+        {
+            State.Attempted.Remove(key);
+            State.Records[key] = State.Records[key] with { RetryPolicy = "manual", UploadStarted = false, SubmissionStarted = false };
+        }
+        // Keep the original error/time. Persistence failure aborts startup, so no
+        // requests can run using a recovery that only exists in memory.
+        Persist();
+    }
+    private void Record(string key, string stage, string outcome, string message,
+        bool? uploadStarted = null, bool? submissionStarted = null, string? retryPolicy = null)
     {
         if (Session is { Token.Length: > 0 }) message = message.Replace(Session.Token, "[已隐藏]", StringComparison.Ordinal);
         if (State.Location.Length > 0) message = message.Replace(State.Location, "[已隐藏]", StringComparison.Ordinal);
         var stamp = Schedule.Timestamp(now());
-        State.Records[key] = new(State.Records.GetValueOrDefault(key)?.StartedAt ?? stamp, stamp, stage, outcome,
-            message.Length > 600 ? message[..600] : message);
+        var previous = State.Records.GetValueOrDefault(key);
+        State.Records[key] = new(previous?.StartedAt ?? stamp, stamp, stage, outcome,
+            message.Length > 600 ? message[..600] : message)
+        {
+            UploadStarted = uploadStarted ?? previous?.UploadStarted,
+            SubmissionStarted = submissionStarted ?? previous?.SubmissionStarted,
+            RetryPolicy = retryPolicy ?? previous?.RetryPolicy ?? ""
+        };
         Persist();
     }
     public string SlotText(string slot)
@@ -27,7 +56,13 @@ public sealed class PlateEngine(PlateApi api, AppState state, Session? session, 
         var key = Schedule.Key(slot, now());
         if (State.Confirmed.Contains(key)) return $"{slot} 已核对成功。";
         if (State.Records.TryGetValue(key, out var record))
-            return $"{slot} {record.UpdatedAt} · {record.Outcome} · {record.Stage}\r\n{record.Message}";
+        {
+            var text = $"{slot} {record.UpdatedAt} · {record.Outcome} · {record.Stage}\r\n{record.Message}";
+            if (!State.Attempted.Contains(key) && record.RetryPolicy == "manual")
+                return text + "\r\n尚未上传或提交；问题解决后可点击“立即打卡”手动重试，仍检查剩余次数及两小时间隔。";
+            if (State.Attempted.Contains(key)) return text + "\r\n已有上传尝试或结果未确认，请在小程序核对；不会重复提交。";
+            return text;
+        }
         return State.Attempted.Contains(key) ? $"{slot} 已尝试，首次错误未记录；请在小程序核对。" : $"{slot} 待执行。";
     }
     public async Task<bool> ImportAsync(string token, Func<UserProfile, bool> approveFirstAccount)
@@ -85,6 +120,28 @@ public sealed class PlateEngine(PlateApi api, AppState state, Session? session, 
         catch (Exception error) { Handle(error); }
         finally { Busy = false; Changed?.Invoke(); }
     }
+    public async Task<ConnectionResult> ConnectAsync()
+    {
+        if (Busy) return ConnectionResult.Failed;
+        if (Session is null) return ConnectionResult.NeedsCapture;
+        Busy = true; Changed?.Invoke();
+        try
+        {
+            await UserAsync(); State.NeedsLogin = false; Persist();
+            Message("已连接，保存的登录仍有效，无需重新采集或设置代理和证书。");
+            return ConnectionResult.Connected;
+        }
+        catch (LoginRequiredException error)
+        {
+            Handle(error); return ConnectionResult.NeedsCapture;
+        }
+        catch (Exception error)
+        {
+            Message("未能检查已保存的登录，请稍后重试。" + error.Message);
+            return ConnectionResult.Failed;
+        }
+        finally { Busy = false; Changed?.Invoke(); }
+    }
     private void Handle(Exception error)
     {
         if (error is LoginRequiredException) { State.NeedsLogin = true; Persist(); }
@@ -107,21 +164,21 @@ public sealed class PlateEngine(PlateApi api, AppState state, Session? session, 
         var slot = Schedule.Due(now());
         if (!State.ScheduleEnabled || State.NeedsLogin || Session is null || Busy || slot is null) return;
         var key = Schedule.Key(slot, now());
-        if (!State.Attempted.Contains(key) && !State.Confirmed.Contains(key))
+        if (!State.Attempted.Contains(key) && !State.Confirmed.Contains(key) && State.Records.GetValueOrDefault(key)?.RetryPolicy != "manual")
             await SubmitAsync(slot, defaultPhoto);
     }
     public async Task SubmitAsync(string slot, Func<(byte[] Bytes, string Mime, string Extension)> readPhoto)
     {
         if (Busy || !Schedule.Slots.Contains(slot)) return;
         var key = Schedule.Key(slot, now());
-        if (State.NeedsLogin || Session is null) { Message("请先导入有效的本人 token。"); return; }
+        if (State.NeedsLogin || Session is null) { Message("请先点击“连接微信”获取有效的本人登录。"); return; }
         if (State.Attempted.Contains(key) || State.Confirmed.Contains(key)) { Message(SlotText(slot) + " 本时段不会重复提交，请先核对小程序。"); return; }
         try { ValidateSettings(State); } catch (Exception error) { Message(error.Message); return; }
         Busy = true;
         var stage = "准备照片"; var uploadStarted = false; var submissionStarted = false; var rejected = false;
         try
         {
-            State.Attempted.Add(key); Record(key, stage, "执行中", "");
+            State.Attempted.Add(key); Record(key, stage, "执行中", "", uploadStarted: false, submissionStarted: false, retryPolicy: "");
             var photo = readPhoto();
             if (photo.Bytes.Length is < 1024 or > 20 * 1024 * 1024 || photo.Mime is not ("image/png" or "image/jpeg")
                 || photo.Extension is not ("png" or "jpg")) throw new ArgumentException("请选择 1 KB 至 20 MB 的有效 JPG 或 PNG 照片。");
@@ -130,13 +187,13 @@ public sealed class PlateEngine(PlateApi api, AppState state, Session? session, 
             if (before.LastCheckIn is { } last && now() < last.AddHours(2))
             {
                 State.Attempted.Remove(key);
-                Record(key, stage, "等待间隔", $"上次打卡尚未满 2 小时，最早 {Schedule.Timestamp(last.AddHours(2))} 可提交；错过定时窗口不补交。");
+                Record(key, stage, "等待间隔", $"上次打卡尚未满 2 小时，最早 {Schedule.Timestamp(last.AddHours(2))} 可提交；错过定时窗口不补交。", retryPolicy: "automatic");
                 Message(SlotText(slot)); return;
             }
             if (before.Remaining <= 0) throw new BusinessException(12010, "当天剩余次数为 0，未上传照片。");
-            stage = "上传照片"; uploadStarted = true; Record(key, stage, "执行中", "");
+            stage = "上传照片"; Record(key, stage, "执行中", "", uploadStarted: true); uploadStarted = true;
             var path = await api.UploadAsync(Session!.Token, photo.Bytes, photo.Mime, photo.Extension);
-            stage = "提交打卡"; submissionStarted = true; Record(key, stage, "执行中", "");
+            stage = "提交打卡"; Record(key, stage, "执行中", "", submissionStarted: true); submissionStarted = true;
             try { await api.PunchAsync(Session!.Token, State.GroupId, State.Location, path); }
             catch (BusinessException error) when (error.Code != 0) { rejected = true; throw; }
             stage = "核对成功记录"; Record(key, stage, "执行中", "");
@@ -154,13 +211,17 @@ public sealed class PlateEngine(PlateApi api, AppState state, Session? session, 
         }
         catch (Exception error)
         {
-            if (!uploadStarted && stage == "查询账号" && TransientNetwork(error))
+            if (!uploadStarted)
             {
                 State.Attempted.Remove(key);
-                Record(key, stage, "等待网络", "尚未上传或提交。网络恢复后仅在原 5 分钟窗口内重试；错过窗口不补交。 " + error.Message);
+                var offline = stage == "查询账号" && TransientNetwork(error);
+                var quota = error is BusinessException { Code: 12010 };
+                var outcome = offline ? "等待网络" : quota ? "等待条件" : "未提交";
+                var message = offline ? "尚未上传或提交。网络恢复后仅在原 5 分钟窗口内重试；错过窗口不补交。 " + error.Message : error.Message;
+                Record(key, stage, outcome, message, uploadStarted: false, submissionStarted: false, retryPolicy: offline || quota ? "automatic" : "manual");
+                Handle(error);
                 Message(SlotText(slot)); return;
             }
-            if (!uploadStarted && error is LoginRequiredException) State.Attempted.Remove(key);
             Record(key, stage, submissionStarted && !rejected ? "结果未确认" : "未成功", error.Message);
             Handle(error);
         }
